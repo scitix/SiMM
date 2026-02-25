@@ -5,7 +5,7 @@
 #include <gflags/gflags.h>
 
 DEFINE_string(product_name, "SiMM", "Product name, used for logging and versioning");
-DEFINE_string(product_version, "v0.2.0", "Product version, used for logging and versioning");
+DEFINE_string(product_version, "v0.1.0", "Product version, used for logging and versioning");
 
 // log flags
 DEFINE_string(default_logging_file, "/var/log/simm/simm.log", "Logging file for the default module");

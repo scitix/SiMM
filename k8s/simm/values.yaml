@@ -6,7 +6,7 @@ image:
   repository: docker.io/simm
   pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "v0.2.0-py310"
+  tag: "v0.1.0-py310"
 
 # namespace for Cluster Manager and Data Server, empty using default namespace
 namespace: ""

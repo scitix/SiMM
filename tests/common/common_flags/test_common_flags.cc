@@ -7,7 +7,7 @@ DECLARE_bool(buildinfo);
 
 TEST(ErrcodeCommonFlagsTest, CommonFlags) {
     EXPECT_EQ(FLAGS_product_name, "SiMM");
-    EXPECT_EQ(FLAGS_product_version, "v0.2.0");
+    EXPECT_EQ(FLAGS_product_version, "v0.1.0");
     EXPECT_TRUE(!FLAGS_buildinfo);
 }
 
