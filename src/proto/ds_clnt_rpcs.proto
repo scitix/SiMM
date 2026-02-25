@@ -1,0 +1,57 @@
+//
+// Define various RPC messages between simm clients and data servers.
+//
+
+syntax = "proto3";
+
+// ********** Client Query Data Server RPCS **********
+// Clnt -> DS
+message KVGetRequestPB {
+  uint32 shard_id = 1;
+  string key = 2;
+  uint64 req_flag = 3;  // e.g. MIG_REDIRECTING
+  uint64 buf_addr = 4;  // mr info
+  uint64 buf_ofs = 5;
+  uint64 buf_len = 6;
+  repeated uint32 buf_rkey = 7;
+}
+// DS -> Clnt
+message KVGetResponsePB {
+  sint32 ret_code = 1;
+  uint32 val_len = 2;   // actual value length set only when ret_code is 0
+}
+// Clnt -> DS
+message KVPutRequestPB {
+  uint32 shard_id = 1;
+  string key = 2;
+  uint64 val_len = 3;
+  uint64 req_flag = 4;  // e.g. MIG_REDIRECTING
+  uint64 buf_addr = 5;  // mr info
+  uint64 buf_ofs = 6;
+  uint64 buf_len = 7;
+  repeated uint32 buf_rkey = 8;
+}
+// DS -> Clnt
+message KVPutResponsePB {
+  sint32 ret_code = 1;
+}
+// Clnt -> DS
+message KVDelRequestPB {
+  uint32 shard_id = 1;
+  string key = 2;
+  uint64 req_flag = 3;  // e.g. MIG_REDIRECTING
+}
+// DS -> Clnt
+message KVDelResponsePB {
+  sint32 ret_code = 1;
+}
+// Clnt -> DS
+message KVLookupRequestPB {
+  uint32 shard_id = 1;
+  string key = 2;
+  uint64 req_flag = 3;  // e.g. MIG_REDIRECTING
+}
+// DS -> Clnt
+message KVLookupResponsePB {
+  sint32 ret_code = 1;
+}

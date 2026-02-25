@@ -1,0 +1,5 @@
+add_subdirectory(common)
+add_subdirectory(proto)
+add_subdirectory(client)
+add_subdirectory(data_server)
+add_subdirectory(cluster_manager)

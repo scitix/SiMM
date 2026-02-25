@@ -1,0 +1,6 @@
+[build-system]
+requires = ["scikit-build-core", "wheel", "nanobind"]
+build-backend = "scikit_build_core.build"
+
+[tool.scikit-build]
+wheel.expand-macos-universal-tags = true

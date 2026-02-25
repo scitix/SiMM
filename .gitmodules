@@ -1,0 +1,15 @@
+[submodule "third_party/folly"]
+	path = third_party/folly
+	url = https://github.com/facebook/folly
+[submodule "third_party/gtest"]
+	path = third_party/gtest
+	url = https://github.com/google/googletest.git
+[submodule "third_party/fmt"]
+	path = third_party/fmt
+	url = https://github.com/fmtlib/fmt.git
+[submodule "third_party/fast_float"]
+	path = third_party/fast_float
+	url = https://github.com/fastfloat/fast_float.git
+[submodule "third_party/concurrentqueue"]
+	path = third_party/concurrentqueue
+	url = https://github.com/cameron314/concurrentqueue.git

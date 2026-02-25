@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: Service
+metadata:
+  ##定义headless service名，用于关联到每个pod资源创建DNS资源记录
+  name: simm-data-svc
+  {{ if .Values.namespace }}
+  namespace: {{ .Values.namespace }}
+  {{ end }}
+  labels:
+    {{ if .Values.namespace }}
+    app: app-{{ .Values.namespace }}-simm-data-svc
+    {{ else }}
+    app: app-simm-data-svc
+    {{ end }}
+spec:
+  clusterIP: None
+  ports:
+    - port: {{ .Values.simm.dataserverPort }}
+      name: simm-dataserver-port
+  selector:
+    {{ if .Values.namespace }}
+    app: app-{{ .Values.namespace }}-simm-data-svc
+    {{ else }}
+    app: app-simm-data-svc
+    {{ end }}
+---
+apiVersion: apps/v1
+kind: StatefulSet #定义资源类型
+metadata: #定义资源的元数据信息, 比如资源的名称、namespace、标签等信息
+  name: simm-data-svc #定义资源的名字，在同一个namespace空间中必须是唯一的
+  {{ if .Values.namespace }}
+  namespace: {{ .Values.namespace }}
+  {{ end }}
+spec: #定义资源需要的参数属性
+  # 该serviceName就是上面headless service的name，指定此StatefulSet属于哪个headless service
+  serviceName: simm-data-svc
+  replicas: {{ .Values.replicaCount }}
+  selector: #定义标签选择器
+    matchLabels:
+      {{ if .Values.namespace }}
+      app: app-{{ .Values.namespace }}-simm-data-svc
+      {{ else }}
+      app: app-simm-data-svc
+      {{ end }}
+  podManagementPolicy: Parallel
+  template: #定义pod templete
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{ if .Values.namespace }}
+        app: app-{{ .Values.namespace }}-simm-data-svc
+        {{ else }}
+        app: app-simm-data-svc
+        {{ end }}
+    spec:
+      restartPolicy: Always
+      # hostNetwork: true
+      # dnsPolicy: ClusterFirstWithHostNet
+      hostIPC: true
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: simm-data-server
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.simm.dataserverPort }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: SIMM_MEMORY_LIMIT
+            valueFrom:
+              resourceFieldRef:
+                containerName: simm-data-server
+                resource: limits.memory
+          - name: SIMM_MEMORY_RESERVED
+            value: "0"
+          - name: APISERVER
+            value: https://kubernetes.default.svc
+          - name: SERVICEACCOUNT
+            value: /var/run/secrets/kubernetes.io/serviceaccount
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: SICL_LOG_LEVEL
+            value: WARN
+          - name: SICL_LOG_FILE
+            value: /var/log/sicl/sicl-transport-ds.log
+          - name: SICL_CHANNEL_SWEEP
+            value: "1"
+          {{ if .Values.dataserver_debug }}
+          command: ["/bin/bash", "-c", "sysctl -w kernel.core_pattern=\"|/usr/bin/lz4 - /var/lib/systemd/coredump/core.%E.%h.lz4 -z -f\" && /workspace/build/debug/bin/data_server --memory_limit_bytes=$SIMM_MEMORY_LIMIT && tail -f /dev/null"]
+          {{ else }}
+          command: ["/bin/bash", "-c", "sysctl -w kernel.core_pattern=\"|/usr/bin/lz4 - /var/lib/systemd/coredump/core.%E.%h.lz4 -z -f\" && /workspace/build/release/bin/data_server --memory_limit_bytes=$SIMM_MEMORY_LIMIT"]
+          {{ end }}
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+            - name: coredump
+              mountPath: /var/lib/systemd/coredump
+            - name: sysfs
+              mountPath: /sys
+      volumes:
+      - name: coredump
+        hostPath:
+          path: /var/lib/systemd/coredump
+      - name: shm
+        emptyDir:
+          medium: Memory
+      - name: sysfs
+        hostPath:
+          path: /sys
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: simm-disable
+                operator: DoesNotExist
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                {{ if .Values.namespace }}
+                - app-{{ .Values.namespace }}-simm-data-svc
+                {{ else }}
+                - app-simm-data-svc
+                {{ end }}
+            topologyKey: "kubernetes.io/hostname"
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

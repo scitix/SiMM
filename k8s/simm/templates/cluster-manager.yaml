@@ -1,0 +1,159 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: simm
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  - pods
+  - services
+  - endpoints
+  verbs:
+  - '*'
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  {{ if .Values.namespace }}
+  name: simm-{{ .Values.namespace }}
+  {{ else }}
+  name: simm
+  {{ end }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: simm
+subjects:
+- kind: ServiceAccount
+  name: default
+  {{ if .Values.namespace }}
+  namespace: {{ .Values.namespace }}
+  {{ end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  ##定义headless service名，用于关联到每个pod资源创建DNS资源记录
+  name: simm-clustermanager-svc
+  {{ if .Values.namespace }}
+  namespace: {{ .Values.namespace }}
+  {{ end }}
+  labels:
+    {{ if .Values.namespace }}
+    app: app-{{ .Values.namespace }}-simm-clustermanager-svc
+    {{ else }}
+    app: app-simm-clustermanager-svc
+    {{ end }}
+spec:
+  clusterIP: None
+  ports:
+    - port: {{ .Values.simm.clustermanagerPort }}
+      name: simm-clustermanager-port
+  selector:
+    {{ if .Values.namespace }}
+    app: app-{{ .Values.namespace }}-simm-clustermanager-svc
+    {{ else }}
+    app: app-simm-clustermanager-svc
+    {{ end }}
+---
+apiVersion: apps/v1
+kind: Deployment #定义资源类型
+metadata: #定义资源的元数据信息, 比如资源的名称、namespace、标签等信息
+  name: simm-clustermanager #定义资源的名字，在同一个namespace空间中必须是唯一的
+  {{ if .Values.namespace }}
+  namespace: {{ .Values.namespace }}
+  {{ end }}
+  labels:
+    {{ if .Values.namespace }}
+    app: app-{{ .Values.namespace }}-simm-clustermanager-svc
+    {{ else }}
+    app: app-simm-clustermanager-svc
+    {{ end }}
+spec: #定义资源需要的参数属性
+  selector: #定义标签选择器
+    matchLabels:
+      {{ if .Values.namespace }}
+      app: app-{{ .Values.namespace }}-simm-clustermanager-svc
+      {{ else }}
+      app: app-simm-clustermanager-svc
+      {{ end }}
+  template: #定义pod templete
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{ if .Values.namespace }}
+        app: app-{{ .Values.namespace }}-simm-clustermanager-svc
+        {{ else }}
+        app: app-simm-clustermanager-svc
+        {{ end }}
+    spec:
+      restartPolicy: Always
+      # dnsPolicy: ClusterFirstWithHostNet
+      # hostIPC: true
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: simm-cluster-manager
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.simm.clustermanagerPort }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: APISERVER
+            value: https://kubernetes.default.svc
+          - name: SERVICEACCOUNT
+            value: /var/run/secrets/kubernetes.io/serviceaccount
+          - name: SICL_LOG_LEVEL
+            value: WARN
+          - name: SICL_LOG_FILE
+            value: /var/log/sicl/sicl-transport-cm.log
+          {{ if .Values.clustermanager_debug}}
+          command: ["/bin/bash", "-c", "sysctl -w kernel.core_pattern=\"|/usr/bin/lz4 - /var/lib/systemd/coredump/core.%E.%h.lz4 -z -f\" && /workspace/build/debug/bin/cluster_manager --cm_cluster_init_grace_period_inSecs=30 --dataserver_min_num=1 && tail -f /dev/null"]
+          {{ else }}
+          command: ["/bin/bash", "-c", "sysctl -w kernel.core_pattern=\"|/usr/bin/lz4 - /var/lib/systemd/coredump/core.%E.%h.lz4 -z -f\" && sleep 1 && /workspace/build/release/bin/cluster_manager --cm_cluster_init_grace_period_inSecs=30 --dataserver_min_num=1"]
+          {{ end }}
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+            - name: coredump
+              mountPath: /var/lib/systemd/coredump
+      volumes:
+      - name: shm
+        emptyDir:
+          medium: Memory
+      - name: coredump
+        hostPath:
+          path: /var/lib/systemd/coredump
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                {{ if .Values.namespace }}
+                - app-{{ .Values.namespace }}-simm-clustermanager-svc
+                {{ else }}
+                - app-simm-clustermanager-svc
+                {{ end }}
+            topologyKey: "kubernetes.io/hostname"
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
