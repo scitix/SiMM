@@ -1,6 +1,5 @@
 /*
  * Minimal Unit test for Put and Get on Single Node
- * Zebang He <zbhe@siflow.cn>
  */
 
 #include <gflags/gflags.h>

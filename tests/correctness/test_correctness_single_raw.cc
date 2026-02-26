@@ -1,6 +1,5 @@
 /*
  * Unit test for Read_After_Write on Single Node / Multi Nodes
- * Zebang He <zbhe@siflow.cn>
  */
 
 #include <gflags/gflags.h>

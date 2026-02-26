@@ -17,4 +17,4 @@ Please use below unified prefix formats in your PR title:
 - `[Chore]` for any PRs that do not fit the above categories. But PLEASE use it prudentially.
 
 # Ask for Help
-If you have any confusions/suggestions about contributing to SiMM project, feel free to contact maintainer ytji@siflow.cn
+If you have any confusions/suggestions about contributing to SiMM project, feel free to contact maintainer keith.jiang@scitix.ai
