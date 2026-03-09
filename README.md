@@ -57,7 +57,7 @@ Under multi-turn long-context LLM workloads with significant KV cache reuse, **S
 
 ### Comparison with industrial-leading platform
 <div align="left">
-  <img src="docs/images/SiMM_Arch_Compare_With_MC.png" alt="SiMM Architecture Comparison" width="95%" />
+  <img src="docs/images/SiMM_Arch_Compare_With_MC.png" alt="SiMM Architecture Comparison" width="100%" />
 </div>
 
 ## Performance
@@ -76,7 +76,12 @@ All tests are executed on identical nodes with below configurations:
 ### Benchmark with vLLM/LMCache
 SiMM is a storage backend of LMCache in vLLM (patch is being prepared to LMCache project).
 
-**Test Settings**: LLaMa3.3-70B, TP=4
+**Test Settings**: use vllm/benchmark/multi_turn, DeepSeek-R1, TP=8, Random dataset, 40 rounds
+<div align="left">
+  <img src="docs/images/compare_vLLM_DeepSeek-R1.png" alt="DeepSeek-R1" width="80%" />
+</div>
+
+**Test Settings**: LLaMa3.3-70B, TP=4, Random dataset, 2 rounds(Identical input prompts across rounds to ensure a theoretical full cache hit in the second round)
 <div align="left">
   <img src="docs/images/TTFT_Avg_Comp_GPUOnly_LLaMa33-70B.png" alt="TTFT GPU" width="40%" />
   <img src="docs/images/TTFT_Avg_Comp_CPUMem_LLaMa33-70B.png" alt="TTFT GPU" width="38.1%" />
@@ -88,13 +93,13 @@ SiMM is a storage backend of HiCache in SGLang, [#PR18016](https://github.com/sg
 **Test Settings**: SGLang v0.5.8, with benchmark/hicache/bench_multiturn.py; rounds=10, parallel=32.
 
 <div align="left">
-  <img src="docs/images/compare_DeepSeek-R1_rounds10_parallel32.png" alt="DeepSeek-R1" width="75%" />
+  <img src="docs/images/compare_DeepSeek-R1_rounds10_parallel32.png" alt="DeepSeek-R1" width="80%" />
 </div>
 <div align="left">
-  <img src="docs/images/compare_Meta-Llama-3.1-70B_rounds10_parallel32.png" alt="LLaMa-3.1-70B" width="75%" />
+  <img src="docs/images/compare_Meta-Llama-3.1-70B_rounds10_parallel32.png" alt="LLaMa-3.1-70B" width="80%" />
 </div>
 <div align="left">
-  <img src="docs/images/compare_Qwen2.5-72B_rounds10_parallel32.png" alt="Qwen2.5-72B-Instruct" width="75%" />
+  <img src="docs/images/compare_Qwen2.5-72B_rounds10_parallel32.png" alt="Qwen2.5-72B-Instruct" width="80%" />
 </div>
 
 ## Launch SiMM Service
