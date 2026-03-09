@@ -1,7 +1,7 @@
 """
 Unit tests for the key-value store functionality.
 
-This module contains comprehensive tests for the SIMM key-value store,
+This module contains comprehensive tests for the SiMM key-value store,
 covering both synchronous and asynchronous operations with and without
 memory registration (MR) for RDMA operations.
 """

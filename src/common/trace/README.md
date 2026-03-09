@@ -1,6 +1,6 @@
-# SIMM Trace Analyzer
+# SiMM Trace Analyzer
 
-The SIMM Trace Analyzer is a tool for analyzing trace data stored in shared memory. It can also export traces to JSON for further analysis and visualization in Python.
+The SiMM Trace Analyzer is a tool for analyzing trace data stored in shared memory. It can also export traces to JSON for further analysis and visualization in Python.
 
 ## Features
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SIMM Trace Visualization Tool
+SiMM Trace Visualization Tool
 """
 
 import json
@@ -116,7 +116,7 @@ def plot_segment_timelines(data, output_dir=".", segments_per_plot=None):
         
         ax.set_xlabel('Time (seconds)', fontsize=14, fontweight='bold')
         ax.set_ylabel('Latency (us)', fontsize=14, fontweight='bold')
-        ax.set_title(f'SIMM Trace Segments Timeline (Plot {plot_idx + 1}/{num_plots})\nSegments {start_idx + 1}-{end_idx} of {num_segments}', 
+        ax.set_title(f'SiMM Trace Segments Timeline (Plot {plot_idx + 1}/{num_plots})\nSegments {start_idx + 1}-{end_idx} of {num_segments}', 
                      fontsize=14, fontweight='bold', pad=15)
 
         # Set y-axis range: from 0 to max latency * 1.2
@@ -137,7 +137,7 @@ def plot_segment_timelines(data, output_dir=".", segments_per_plot=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Visualize SIMM trace data')
+    parser = argparse.ArgumentParser(description='Visualize SiMM trace data')
     parser.add_argument('json_file', help='Input JSON file from simm_trace_analyzer')
     parser.add_argument('-o', '--output-dir', default='.', help='Output directory for plots')
     parser.add_argument('-n', '--segments-per-plot', type=int, default=None, 

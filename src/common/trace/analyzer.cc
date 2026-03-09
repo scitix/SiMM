@@ -130,7 +130,7 @@ void TraceAnalyzer::ProcessTrace(RequestTraceShm *trace) {
 
 void TraceAnalyzer::PrintStatistics() const {
   if (segment_stats_.empty()) {
-    std::cout << "[SIMM Trace Analyzer] No data found" << std::endl;
+    std::cout << "[SiMM Trace Analyzer] No data found" << std::endl;
     return;
   }
 
@@ -145,7 +145,7 @@ void TraceAnalyzer::PrintStatistics() const {
   const int metrics = 7;  // Avg/Min/Max/Median/P99/P99.9/StdDev
   const int total_w = name_w + count_w + metrics * num_w;
 
-  std::cout << "\n=== SIMM Trace Statistics (Total Requests: " << total_traces_ << ") ===" << std::endl;
+  std::cout << "\n=== SiMM Trace Statistics (Total Requests: " << total_traces_ << ") ===" << std::endl;
   std::cout << std::fixed << std::setprecision(2);
 
   auto now_time = get_timestamp_ns();
@@ -214,7 +214,7 @@ void TraceAnalyzer::PrintStatistics() const {
 
 void TraceAnalyzer::PrintAllTraces() const {
   if (all_traces_.empty()) {
-    std::cout << "[SIMM Trace Analyzer] No traces found" << std::endl;
+    std::cout << "[SiMM Trace Analyzer] No traces found" << std::endl;
     return;
   }
 

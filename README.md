@@ -1,114 +1,92 @@
-# SiMM: Scitix In-Memory Middleware
+# SiMM: Scalable in-Memory Middleware
 
-## Overview
-The SiMM is a distributed, high-performance, elastic cache acceleration layer for all AI workloads.
-....
+## About
+**SiMM** is a high-performance, scalable Key-Value (KV) cache engine designed for LLM inference workloads. It addresses the critical bottlenecks in long-context prompts and multi-turn agent interactions by providing a dedicated, ultra-fast memory pool for KV cache storage.  
+Seamlessly integrated with leading inference engines like SGLang and vLLM, enabling offload and retrieve KV caches from SiMM, inference engines can bypass redundant prefill computations, significantly save GPU cycles and drastically reduce Time to First Token (TTFT). SiMM is already proven and validated in production environments.  
 
----
-
-## Documentations
-* [Architecture](docs/architecture.md)
-* [Deploy Guide](docs/deploy_guide.md)
-* [Admin Tool](docs/admin_tool.md)
-* [Inference Integration](docs/inference_integration.md)
-* [Production Limits](docs/production_limits.md)
-* [Observability Functionality](docs/observability_fuctionality.md)
-* [FAQ](docs/faq.md)
-
----
-
----
+#### Key Features
+- **Distributed Architecture**: Provides a massive, multi-node KV cache storage capable of supporting extremely long-context demands
+- **Linear Scalability**: Delivers linear growth in both capacity and throughput by horizontally scaling SiMM data servers, meeting dynamic KV cache requirements
+- **Ultra-Low Latency**: Reduces KV cache I/O (PUT/GET) latency by up to **9x** compared to industry-leading alternatives through an **end-to-end zero-copy** mechanism and a highly efficient software stack
+- **Ultra-High Bandwidth**: Maximizes I/O bandwidth by fully utilizing **ALL RDMA NICs** of client nodes (effectively eliminating the bottlenecks exposed in [DualPath](https://arxiv.org/abs/2602.21548))
+- **Ease of Use**: Offers seamless integration with popular inference engines, with deployment orchestrated via **Kubernetes (K8s)** for production-grade reliability  
+  
+Under multi-turn long-context LLM workloads with significant KV cache reuse, **SiMM drastically reduces prefill latency (TTFT)** by transforming the prefill phase from a compute-heavy task into a high-speed I/O retrieval operation. Under 32K context length, SiMM achieves **3.1x** speedup over "No Cache" configuration and **2.1x** speedup over local CPU caching, **1.2x** outperforming industry-leading alternatives [[details](#integration-with-vllmlmcache)].   
+<div align="center">
+  <img src="docs/images/SiMM_LLM_Benchmark_Results.png" alt="SiMM LLM Benchmark results" width="60%" />
+</div>
 
 ## Architecture Overview
 <div align="center">
   <img src="docs/images/SiMM_Arch_with_Applications.png" alt="SiMM Architecture" width="70%" />
 </div>
 
-SiMM stack consists of below core modules
-| Module         | Description                                                       |
-| :------------- | :---------------------------------------------------------------- |
-| ClusterManager | Cluster-Level central control module                              |
-| DataServer     | Data node to store User KV data                                   |
-| Client         | Client module running in user-space with application process      |
-| SiCL           | High-performance network transport library on RDMA(IB and RoCEv2) |
+| Core Modules    | Description                                                       | Code Open Source  |
+| :-------------  | :---------------------------------------------------------------- | :-----------------|
+| Cluster Manager | Controller of cluster management, ensures cluster scaling and optimal data distribution, minimum number: 1 | ✅ Yes            |
+| Data Server     | Data nodes to host user KVCache and related metadata, minimum number: 1                                    | ✅ Yes            |
+| Client          | Lightweight Python/C++ SDK integrated in LLM inference engine to offload and retrieve KV Caches from SiMM  | ✅ Yes            |
+| Observability   | Internal observability modules to collect metrics/io_traces and make them visible                          | ✅ Yes            |
+| SiCL            | High-performance network transport library on RDMA (IB and RoCEv2)                                         | ⚠️ No (installation package) |
 
-#### ClusterManager(CM)
-As central controller of SiMM Cluster, it play important roles in cluster management: 
-- Manager global KV shards-dataserver routing table which help SiMM Clients find the correct dataserver
-- Identify dataservers by hand-shake RPC requests
-- Detect health status of dataservers by HB RPC requests
-- Schedule shards migration plans by different policies and cluster's load (WIP)
+**Cluster Manager**
+- Handles node lifecycle and health monitoring by running Node-Join and Heartbeat protocol
+- Maintains and propagates Shard-to-Data-Server routing table, allowing efficient data addressing
+- Manages cluster scaling, migration tasks to ensure a balanced distribution of data and load (WIP)
 
-#### DataServer(DS)
-Data nodes to store all user KV datas, now CPU memory is supported: 
-- Use host CPU memory by shm files format
-- Per-shard KV table to store KV datas, and searched by key hash value
-- Multi-Slab level design to store different KV datas, to import memory utilization 
-- Different KV evication policies supported (WIP)
+**Data Server**
+- Manages host CPU memory utilizing shared memory (shm) file formats
+- Maintains per-shard KV tables to store data, utilizing key hash values for efficient indexing and querying
+- Employs multi-slab designs with best-fit allocation to efficiently store variable-sized KV data
+- Supports various KV eviction policies (WIP)
 
-#### Client(CLNT)
-- C++ / Python SDKs supported
-- Flexible MR buffer management by user application
-- Fail-fast mechanism supported to avoid long tail-latency
-- Concise implementation to lower CPU/Memroy usage on user hosts
+**Client**
+- Aggregates small KV cache I/O into batches to maximize transfer bandwidth utilization and minimize per-request overhead
+- Enables zero-copy data path by leveraging user-managed Memory Region (MR) buffer
+- Integrated fail-fast mechanisms to mitigate tail latency
 
-#### SiCL Network Transport Library
-High-performance network transport library based on RDMA(IB and RoCEv2):
+**Observability**
+- Supports metrics collection like throughput, latency, iops, error stat, see usage [[Metrics](src/common/metrics/README.md)]
+- Supports trace point injection into any functions in I/O path to help performance profiling, see usage [[I/O Trace](src/common/trace/README.md)]
+
+**SiCL Network Transport Library**
 - ⚠️ Not open-sourced, install it by package and use it in shared library way
-- RPC APIs supported
-- Zero-copy with MR registration and mempool management
-- Epoll and busy-pool modes supported to perceive CQ events
-- Large data package auto-split supported to improve throughput
-- Request timeout control
+- Supports RDMA-native RPC and one-sided RDMA semantics
+- Zero-copy data transfer for both host and GPU memory
+- Supports both busy-polling and event-driven execution modes
+
+### Comparison with industrial-leading platform
+<div align="left">
+  <img src="docs/images/SiMM_Arch_Compare_With_MC.png" alt="SiMM Architecture Comparison" width="85%" />
+</div>
 
 ## Performance
-### C++ SDK Performance
-| Test Env | (1 client + 3 dataservers,  hardware are same) | 
-| :---------     | :---------      |
-| OS  | Ubuntu 22.04(Jammy Jellyfish) |
-| NIC | 400Gbps RDMA NIC * 8 | 
-| CPU | 192 CPU cores | 
-| Mem | 2TB |
+### Test Environment
+All tests are executed on identical nodes with below configurations:  
+- LLM serving node : H200 x 8, 400Gbps x 8 RNICs, 192 CPU Cores, 2TB memory, Ubuntu 22.04
+- SiMM cluster     : Data Server x 3, Cluster Manager x 1, 3TB host memory in total
+- Mooncake cluster : Store Server x 3, Master Server x 1, 3TB host memory in total
 
-| Metrics | OP Setting  | Value |
-| :---------     | :---------     | :---------      |
-| **Avg Latency** (1 thread) | 4KB Get | 60 us |
-|  | 1MB Get  | 202 us |
-|  | 4KB Put | 73 us |
-|  | 1MB Put | 145 us |
-|  | lookup | 70 us |
-|  | delete | 75 us |
-| **IOPS** (32 threads) | 4KB Get | ~400k/s |
-|  | 4KB Put | ~350k/s |
-|  | lookup | ~430k/s
-|  | delete | ~420k/s
-| **Throughput** (32 threads) | 1MB Get (binding to 1 NIC) | ~45GB/s |
-|  | 1MB Put (binding to 1 NIC) | ~43GB/s |
+### KV I/O Performance
+**Test Settings**: simm_kvio_bench or mooncake stress_workload_test; 32 threads with sync put/get interfaces for Throughput & IOPS cases 
+<div align="left">
+  <img src="docs/images/SiMM_CPPAPIs_Benchmark_with_MC.png" alt="CPP APIs benchmark" width="60%" />
+</div>
 
-### Integration with vLLM/LMCache
-SiMM can be connected to vLLM as one storage backend by LMCache(patch is being prepared to LMCache project), and provide elastic KVCache to improve inference performance(TTFT/TPOT/TokenThroughput) : 
-Test Env & Settings : LLaMa3.3-70B，TP=4，4×400Gbps NIC
-- SiMM always outperform to GPU only(HBM) when ISL > 64B, and when ISL > 24KB, TTFT(SiMM) is faster by 4x
+### Benchmark with vLLM/LMCache
+SiMM is a storage backend of LMCache in vLLM (patch is being prepared to LMCache project).
+**Test Settings**: LLaMa3.3-70B, TP=4
 <div align="left">
   <img src="docs/images/TTFT_Avg_Comp_GPUOnly_LLaMa33-70B.png" alt="TTFT GPU" width="30%" />
+  <img src="docs/images/TTFT_Avg_Comp_CPUMem_LLaMa33-70B.png" alt="TTFT GPU" width="28.6%" />
 </div>
 
-- SiMM outperform to CPU local(CPU memory) when ISL > 24KB, TTFT is faster by 2x
-<div align="left">
-  <img src="docs/images/TTFT_Avg_Comp_CPULocal_LLaMa33-70B.png" alt="TTFT CPU" width="30%" />
-</div>
+### Benchmark with SGLang/HiCache
+SiMM is a storage backend of HiCache in SGLang(https://github.com/sgl-project/sglang/pull/18016).  
+**Test Settings**: DeepSeek R1, with benchmark/hicache/bench_multiturn.py  
+Test results show that SiMM always outperform to GPU only (HBM only, wo/ HiCache): 
 
-### Integration with SGLang/HiCache
-SiMM is a storage backend of HiCache in SGLang(https://github.com/sgl-project/sglang/pull/18016).
-
-Test Env & Settings :
-- DeepSeek R1 on 8*H200, 8x400Gbps NIC
-- GPU Driver: 570.86.15, CUDA 12.9
-- Use benchmark/hicache/bench_multiturn.py
-
-SiMM always outperform to GPU only.
-
-| rounds | parallel | Req throughput (req/s) | | Input throughput (token/s) | | Output throughput (token/s) | | SLO (ms) | | | |
+| Rounds | Parallel | Req throughput (req/s) | | Input throughput (token/s) | | Output throughput (token/s) | | SLO (ms) | | | |
 |--------|----------|------------------------|-|-----------------------------|-|-----------------------------|-|----------|-|-|-|
 |        |          | SiMM    | GPU          | SiMM       | GPU         | SiMM       | GPU         | SiMM     |             | GPU      |            |
 |        |          |         |              |            |             |            |             | TTFT     | E2E Latency | TTFT     | E2E Latency |
@@ -119,32 +97,13 @@ SiMM always outperform to GPU only.
 |        | 8        | 0.97    | 0.91         | 9353.14    | 8819.79     | 193.55     | 182.40      | 0.43     | 3.65        | 0.66     | 4.51        |
 |        | 16       | 1.01    | 0.98         | 9733.29    | 9459.86     | 201.32     | 195.47      | 0.50     | 4.08        | 0.72     | 5.23        |
 
-'GPU' means only use GPU cache (no use hicache).
+## Launch SiMM Service
 
-## Checkout Codes
-Clone SiMM repository from GitHub:
-
-	git clone https://github.com/Scitix/SiMM simm
-
-Code of `Scitix/SiMM` will be cloned to your local file system in subdirectory simm/, run the
-following commands to check out the submodules:
-
-```bash
-cd simm
-git submodule update --init --recursive
-```
-
----
-
-## Quick Start
-
-### Before Using SiMM
-SiMM is designed and optimized for high-speed RDMA networks (not support TCP-only).
-
-The following needs to be installed before running any component of SiMM:
-
-- RDMA Driver & SDK, such as Mellanox OFED.
-- Python 3.10, virtual environment is recommended.
+### Env Requirements
+> ⚠️**IMPORTANT**
+> - Strongly recommand to run SiMM modules on Ubuntu 22.04 & 24.04 
+> - RDMA Driver & SDK installed, such as Mellanox OFED.
+> - Python 3.10, virtual environment is recommended.
 
 ### Running in Kubernetes
 The easiest way to deploy SiMM into your Kubernetes cluster is to use the Helm Chart. See 
@@ -159,41 +118,33 @@ bash ./build_docker.sh --registry docker.io --tag simm:latest --py_ver 3.10
 helm install simm ./k8s/simm --set image.repository=docker.io/simm:latest --set replicaCount=3
 ```
 
----
+### Build with source codes
 
-## Install Depenencies
-Currently, SiMM only support building on Ubuntu plaform and limited to below two versions:
-* Ubuntu 22.04
-* Ubuntu 24.04
-
-Before building SiMM, it needs to install some dependencies(need ***root*** user) by below two methods:
-
-### Auto Configure
+#### Prepare
 ```bash
+# Clone SiMM codes
+git clone https://github.com/Scitix/SiMM simm
+
+# Clone thirdparty submodules
 cd simm
+git submodule update --init --recursive
+
+# configure env dependency
 bash ./configure.sh
-```
 
-### Manual Bash Commands
-If you meet any issues when using configure.sh, try below bash commands
-```bash
-cd simm
+# [optinal] if meet failures by script, please try below manual install commands
 apt update -y
-
 cd third_party/folly/
 sudo ./build/fbcode_builder/getdeps.py install-system-deps --recursive
-
 sudo apt-get install -y libgflags-dev libgoogle-glog-dev libacl1-dev libprotobuf-dev protobuf-compiler libcurl4-openssl-dev libssl-dev
 sudo apt-get install -y libboost-all-dev libdouble-conversion-dev
 pip install nanobind
+
+# Install SiCL Network Library
+# For SiCL is not open-sourced, you shold install it by package and use it in shared library way, just use ./configure.sh to wget and install it automatically.
 ```
 
-## Install SiCL Network Library
-For SiCL is not open-sourced yet, you shold install it by package and use it in shared library way, just use ```./configure.sh``` to wget and install it automatically.
-
----
-
-## Build
+#### Build 
 Use ***build.sh*** to build SiMM, script usage:
 ```bash
 ./build.sh 
@@ -203,6 +154,8 @@ Use ***build.sh*** to build SiMM, script usage:
     relwithdeb : release mode with debug info 
     minsizerel : creating smallest possible size binaries
   --test    : trigger test codes build under ./tests subdirectory
+  --metric  : enable SiMM metrics collection, default off
+  --trace   : enable SiMM IO latency tracing, default off
   --clean   : will cleanup binaries in build/{mode}/ subdirectory
   --verbose : print more build logs
 ```
@@ -214,9 +167,6 @@ Use ***build.sh*** to build SiMM, script usage:
 
 # build debug mode
 ./build.sh --mode debug
-
-# build release with debug info mode
-./build.sh --mode relwithdeb
 
 # release clean build 
 ./build.sh --mode release --clean
@@ -234,7 +184,7 @@ Use ***build.sh*** to build SiMM, script usage:
 ./build.sh --mode release --trace
 ```
 
-* Build Binaries Output Path
+* Binaries Output Path
 ```bash
 # release mode output
 ./build/release/bin
@@ -255,14 +205,66 @@ Use ***build.sh*** to build SiMM, script usage:
 # same for debwithdeb / minsizerel mode
 ```
 
----
+#### Deploy
+Please refer to [Deploy Guide](docs/deploy_guide.md)
 
-## Dependency Declaration
-SiMM project does not redistribute any third-party system libraries.
-Binaries are built locally by users and may statically or dynamically link against system-provided dependencies(e.g. gflags).
-Users are responsible for license compliance of their own builds.
+## Use SiMM in LLM
+### Run in SGLang
+SiMM integrates with SGLang through HiCache. For detailed usage instructions, see [SGLang HiCache documentation](https://docs.sglang.io/advanced_features/hicache_best_practices.html)
+```bash
+python3 -m sglang.launch_server \
+  --model deepseek-ai/DeepSeek-R1 \
+  --trust-remote-code \
+  --tp 8 --mem-fraction-static 0.75 \
+  --page-size 64 \
+  --enable-hierarchical-cache \
+  --hicache-ratio 1.1 \
+  --hicache-mem-layout page_first_direct \
+  --hicache-io-backend direct \
+  --hicache-storage-backend simm \
+  --hicache-write-policy write_through \
+  --hicache-storage-prefetch-policy timeout \
+  --hicache-storage-backend-extra-config '{"manager_address":"127.0.0.1:30001"}' \
+  --port 8080
+```
 
----
+### Run in vLLM
+SiMM integrates with vLLM through LMCache. For detailed usage instructions, see [LMCache documentation](https://docs.lmcache.ai/index.html).
+```bash
+LMCACHE_CHUNK_SIZE=64 \
+LMCACHE_LOCAL_CPU=True \
+LMCACHE_MAX_LOCAL_CPU_SIZE=1024 \
+LMCACHE_REMOTE_URL=simm://127.0.0.1:30001/?use_sync=1 \
+LMCACHE_EXTRA_CONFIG={"save_chunk_meta":false} \
+LMCACHE_NUMA_MODE=auto \
+vllm serve Qwen/Qwen2.5-7B-Instruct/ \
+   --served-model-name "Qwen/Qwen2.5-7B-Instruct" \
+   --seed 42 \
+   --max-model-len 16384 \
+   --disable-log-requests \
+   --enforce-eager \
+   -tp 1 \
+   --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1", "kv_role":"kv_both"}' \
+   --gpu-memory-utilization 0.8
+```
+
+## Roadmaps
+- [x] Integrate with main-stream LLM inference platforms (SGLang, vLLM)
+- [ ] Support node-level GPU memory pool
+- [ ] Support multiple storage tiers (SSD / Remote Filesystem)
+- [ ] Support loseless KV compression and sparse KV retrieval
+
+## Documentations
+* [Architecture](docs/architecture.md)
+* [Deploy Guide](docs/deploy_guide.md)
+* [Admin Tool](docs/admin_tool.md)
+* [Inference Integration](docs/inference_integration.md)
+* [Production Limits](docs/production_limits.md)
+* [Observability Functionality](docs/observability_fuctionality.md)
+* [FAQ](docs/faq.md)
+
+## Contact us
+<a href="https://join.slack.com/share/enQtMTA2MTg3NTY0MjQ1NzgtZTc1OGFkMTMwMjQ5YTI3MjBiYThlNDZlMDFiMDRjOWMzNDVmYjViMGM5OTRlNGQwZjNmNzMzYzFjMWY4MGJkOA" target="_blank"><strong>Slack</strong></a>   
 
 ## License
 SiMM is under Apache License v2.0, please see [`LICENSE`](LICENSE) for details
