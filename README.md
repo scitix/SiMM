@@ -13,12 +13,12 @@ Seamlessly integrated with leading inference engines like SGLang and vLLM, enabl
   
 Under multi-turn long-context LLM workloads with significant KV cache reuse, **SiMM drastically reduces prefill latency (TTFT)** by transforming the prefill phase from a compute-heavy task into a high-speed I/O retrieval operation. Under 32K context length, SiMM achieves **3.1x** speedup over "No Cache" configuration and **2.1x** speedup over local CPU caching, **1.2x** outperforming industry-leading alternatives [[details](#integration-with-vllmlmcache)].   
 <div align="center">
-  <img src="docs/images/SiMM_LLM_Benchmark_Results.png" alt="SiMM LLM Benchmark results" width="60%" />
+  <img src="docs/images/SiMM_LLM_Benchmark_Results.png" alt="SiMM LLM Benchmark results" width="75%" />
 </div>
 
 ## Architecture Overview
 <div align="center">
-  <img src="docs/images/SiMM_Arch_with_Applications.png" alt="SiMM Architecture" width="70%" />
+  <img src="docs/images/SiMM_Arch_with_Applications.png" alt="SiMM Architecture" width="80%" />
 </div>
 
 | Core Modules    | Description                                                       | Code Open Source  |
@@ -57,7 +57,7 @@ Under multi-turn long-context LLM workloads with significant KV cache reuse, **S
 
 ### Comparison with industrial-leading platform
 <div align="left">
-  <img src="docs/images/SiMM_Arch_Compare_With_MC.png" alt="SiMM Architecture Comparison" width="85%" />
+  <img src="docs/images/SiMM_Arch_Compare_With_MC.png" alt="SiMM Architecture Comparison" width="95%" />
 </div>
 
 ## Performance
@@ -70,15 +70,15 @@ All tests are executed on identical nodes with below configurations:
 ### KV I/O Performance
 **Test Settings**: simm_kvio_bench or mooncake stress_workload_test; 32 threads with sync put/get interfaces for Throughput & IOPS cases 
 <div align="left">
-  <img src="docs/images/SiMM_CPPAPIs_Benchmark_with_MC.png" alt="CPP APIs benchmark" width="60%" />
+  <img src="docs/images/SiMM_CPPAPIs_Benchmark_with_MC.png" alt="CPP APIs benchmark" width="75%" />
 </div>
 
 ### Benchmark with vLLM/LMCache
 SiMM is a storage backend of LMCache in vLLM (patch is being prepared to LMCache project).
 **Test Settings**: LLaMa3.3-70B, TP=4
 <div align="left">
-  <img src="docs/images/TTFT_Avg_Comp_GPUOnly_LLaMa33-70B.png" alt="TTFT GPU" width="30%" />
-  <img src="docs/images/TTFT_Avg_Comp_CPUMem_LLaMa33-70B.png" alt="TTFT GPU" width="28.6%" />
+  <img src="docs/images/TTFT_Avg_Comp_GPUOnly_LLaMa33-70B.png" alt="TTFT GPU" width="40%" />
+  <img src="docs/images/TTFT_Avg_Comp_CPUMem_LLaMa33-70B.png" alt="TTFT GPU" width="38.1%" />
 </div>
 
 ### Benchmark with SGLang/HiCache
