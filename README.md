@@ -63,7 +63,7 @@ Under multi-turn long-context LLM workloads with significant KV cache reuse, **S
 ## Performance
 ### Test Environment
 All tests are executed on identical nodes with below configurations:  
-- LLM serving node : H200 x 8, 400Gbps x 8 RNICs, 192 CPU Cores, 2TB memory, Ubuntu 22.04
+- LLM serving node : H200 x 8, 400Gbps x 8 RNICs, 192 CPU Cores, 2TB memory, Ubuntu 22.04, GPU Driver 570.86.15, CUDA 12.9
 - SiMM cluster     : Data Server x 3, Cluster Manager x 1, 3TB host memory in total
 - Mooncake cluster : Store Server x 3, Master Server x 1, 3TB host memory in total
 
@@ -75,6 +75,7 @@ All tests are executed on identical nodes with below configurations:
 
 ### Benchmark with vLLM/LMCache
 SiMM is a storage backend of LMCache in vLLM (patch is being prepared to LMCache project).
+
 **Test Settings**: LLaMa3.3-70B, TP=4
 <div align="left">
   <img src="docs/images/TTFT_Avg_Comp_GPUOnly_LLaMa33-70B.png" alt="TTFT GPU" width="40%" />
@@ -82,20 +83,19 @@ SiMM is a storage backend of LMCache in vLLM (patch is being prepared to LMCache
 </div>
 
 ### Benchmark with SGLang/HiCache
-SiMM is a storage backend of HiCache in SGLang(https://github.com/sgl-project/sglang/pull/18016).  
-**Test Settings**: DeepSeek R1, with benchmark/hicache/bench_multiturn.py  
-Test results show that SiMM always outperform to GPU only (HBM only, wo/ HiCache): 
+SiMM is a storage backend of HiCache in SGLang, [#PR18016](https://github.com/sgl-project/sglang/pull/18016).
 
-| Rounds | Parallel | Req throughput (req/s) | | Input throughput (token/s) | | Output throughput (token/s) | | SLO (ms) | | | |
-|--------|----------|------------------------|-|-----------------------------|-|-----------------------------|-|----------|-|-|-|
-|        |          | SiMM    | GPU          | SiMM       | GPU         | SiMM       | GPU         | SiMM     |             | GPU      |            |
-|        |          |         |              |            |             |            |             | TTFT     | E2E Latency | TTFT     | E2E Latency |
-| 3      | 4        | 0.81    | 0.80         | 6856.36    | 6810.02     | 161.14     | 159.83      | 0.43     | 3.20        | 0.50     | 3.45        |
-|        | 8        | 0.97    | 0.90         | 8250.51    | 7670.94     | 193.62     | 180.09      | 0.47     | 3.84        | 0.56     | 4.05        |
-|        | 16       | 0.97    | 1.02         | 8236.79    | 8653.88     | 193.49     | 203.30      | 0.49     | 3.73        | 0.63     | 4.92        |
-| 10     | 4        | 0.88    | 0.80         | 8153.91    | 7767.07     | 168.62     | 160.61      | 0.41     | 3.11        | 0.56     | 3.57        |
-|        | 8        | 0.97    | 0.91         | 9353.14    | 8819.79     | 193.55     | 182.40      | 0.43     | 3.65        | 0.66     | 4.51        |
-|        | 16       | 1.01    | 0.98         | 9733.29    | 9459.86     | 201.32     | 195.47      | 0.50     | 4.08        | 0.72     | 5.23        |
+**Test Settings**: SGLang v0.5.8, with benchmark/hicache/bench_multiturn.py; rounds=10, parallel=32.
+
+<div align="left">
+  <img src="docs/images/compare_DeepSeek-R1_rounds10_parallel32.png" alt="DeepSeek-R1" width="75%" />
+</div>
+<div align="left">
+  <img src="docs/images/compare_Meta-Llama-3.1-70B_rounds10_parallel32.png" alt="LLaMa-3.1-70B" width="75%" />
+</div>
+<div align="left">
+  <img src="docs/images/compare_Qwen2.5-72B_rounds10_parallel32.png" alt="Qwen2.5-72B-Instruct" width="75%" />
+</div>
 
 ## Launch SiMM Service
 
