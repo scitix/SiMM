@@ -1,14 +1,14 @@
 # SiMM: Scalable in-Memory Middleware
 
 ## About
-**SiMM** is a high-performance, scalable Key-Value (KV) cache engine designed for LLM inference workloads. It addresses the critical bottlenecks in long-context prompts and multi-turn agent interactions by providing a dedicated, ultra-fast memory pool for KV cache storage.  
+**SiMM** is a high-performance, scalable Key-Value (KV) cache engine designed for LLM inference workloads. It addresses the critical bottlenecks in long-context prompts and multi-turn agent interactions by providing a dedicated, fast memory pool for KV cache storage.  
 Seamlessly integrated with leading inference engines like SGLang and vLLM, enabling offload and retrieve KV caches from SiMM, inference engines can bypass redundant prefill computations, significantly save GPU cycles and drastically reduce Time to First Token (TTFT). SiMM is already proven and validated in production environments.  
 
 #### Key Features
 - **Distributed Architecture**: Provides a massive, multi-node KV cache storage capable of supporting extremely long-context demands
 - **Linear Scalability**: Delivers linear growth in both capacity and throughput by horizontally scaling SiMM data servers, meeting dynamic KV cache requirements
-- **Ultra-Low Latency**: Reduces KV cache I/O (PUT/GET) latency by up to **9x** compared to industry-leading alternatives through an **end-to-end zero-copy** mechanism and a highly efficient software stack
-- **Ultra-High Bandwidth**: Maximizes I/O bandwidth by fully utilizing **ALL RDMA NICs** of client nodes (effectively eliminating the bottlenecks exposed in [DualPath](https://arxiv.org/abs/2602.21548))
+- **Low Latency**: Reduces KV cache I/O (PUT/GET) latency by up to **9x** compared to industry-leading alternatives through an **end-to-end zero-copy** mechanism and a highly efficient software stack
+- **High Bandwidth**: Maximizes I/O bandwidth by fully utilizing **ALL RDMA NICs** of client nodes (effectively eliminating the bottlenecks exposed in [DualPath](https://arxiv.org/abs/2602.21548))
 - **Ease of Use**: Offers seamless integration with popular inference engines, with deployment orchestrated via **Kubernetes (K8s)** for production-grade reliability  
   
 Under multi-turn long-context LLM workloads with significant KV cache reuse, **SiMM drastically reduces prefill latency (TTFT)** by transforming the prefill phase from a compute-heavy task into a high-speed I/O retrieval operation. Under 32K context length, SiMM achieves **3.1x** speedup over "No Cache" configuration and **2.1x** speedup over local CPU caching, **1.2x** outperforming industry-leading alternatives [[details](#integration-with-vllmlmcache)].   
@@ -269,7 +269,7 @@ vllm serve Qwen/Qwen2.5-7B-Instruct/ \
 * [FAQ](docs/faq.md)
 
 ## Contact us
-<a href="https://join.slack.com/share/enQtMTA2MTg3NTY0MjQ1NzgtZTc1OGFkMTMwMjQ5YTI3MjBiYThlNDZlMDFiMDRjOWMzNDVmYjViMGM5OTRlNGQwZjNmNzMzYzFjMWY4MGJkOA" target="_blank"><strong>Slack</strong></a>   
+<a href="https://join.slack.com/share/enQtMTA2MTg3NTY0MjQ1NzgtZTc1OGFkMTMwMjQ5YTI3MjBiYThlNDZlMDFiMDRjOWMzNDVmYjViMGM5OTRlNGQwZjNmNzMzYzFjMWY4MGJkOA" target="_blank"><strong>Slack Channel: simm-open-source</strong></a>   
 
 ## License
 SiMM is under Apache License v2.0, please see [`LICENSE`](LICENSE) for details
