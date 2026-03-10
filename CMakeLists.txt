@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(simm 
-        VERSION 0.2.0 
+        VERSION 0.1.0
         DESCRIPTION "Scitix In-Memory Middleware" 
         LANGUAGES CXX C)
 message(STATUS "CMAKE_CXX_COMPILER_ID: ${CMAKE_CXX_COMPILER_ID}")

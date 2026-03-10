@@ -6,7 +6,7 @@ ext_modules = [
 
 setup(
     name="simm",
-    version="0.2.0",
+    version="0.1.0",
     author="SCITIX XSTOR TEAM",
     packages=["simm", "simm.kv"],
     python_requires=">=3.6",
