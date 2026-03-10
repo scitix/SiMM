@@ -55,6 +55,33 @@ curl -s http://127.0.0.1:<metrics_port>/metrics | head
 curl -s http://127.0.0.1:<metrics_port>/metrics | grep -E '^data_server_'
 ```
 
+### Analyse metrics with `simm_analyse_metrics.py`
+
+A small, dependency-free helper script lives at [`tools/simm_analyse_metrics.py`](../../../tools/simm_analyse_metrics.py).
+It fetches Prometheus text exposition from `/metrics` and prints a human-readable summary:
+
+- module list and per-module totals (requests/errors/read/written)
+- top-N request types (and latency quantiles if exported)
+- top-N error types
+
+With `--rate`, it performs two scrapes and reports per-second rates, including **IOPS (req/s)** and **throughput (MiB/s)**.
+
+Examples:
+
+```bash
+# Snapshot summary (defaults to http://127.0.0.1:9464/metrics)
+./tools/simm_analyse_metrics.py
+
+# Point at a specific host/port
+./tools/simm_analyse_metrics.py --url http://127.0.0.1:<metrics_port>/metrics
+
+# Compute per-second rates by taking two scrapes (IOPS / MiB/s)
+./tools/simm_analyse_metrics.py --rate --interval 1.0
+
+# Show more entries (top 20 instead of 10)
+TOPN=20 ./tools/simm_analyse_metrics.py
+```
+
 ### Run-time configuration
 
 The port is controlled by the gflag `metrics_port`. Currently changing this flag cannot change the port of the server.
