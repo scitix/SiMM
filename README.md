@@ -1,4 +1,9 @@
-# SiMM: Scalable in-Memory Middleware
+<div align="center">
+  <img src="docs/images/SiMM_Logo.png" width=44% />
+  <h2 align="center">
+    Scalable in-Memory Middleware
+  </h2>
+</div>
 
 ## About
 **SiMM** is a high-performance, scalable Key-Value (KV) cache engine designed for LLM inference workloads. It addresses the critical bottlenecks in long-context prompts and multi-turn agent interactions by providing a dedicated, fast memory pool for KV cache storage.  
@@ -6,7 +11,7 @@ Seamlessly integrated with leading inference engines like SGLang and vLLM, enabl
 
 #### Key Features
 - **Distributed Architecture**: Provides a massive, multi-node KV cache storage capable of supporting extremely long-context demands
-- **Linear Scalability**: Delivers linear growth in both capacity and throughput by horizontally scaling SiMM data servers, meeting dynamic KV cache requirements
+- **Linear Scalability**: Delivers linear growth in both capacity and throughput by horizontally scaling SiMM data servers via one-hop hash based addressing, meeting dynamic KV cache requirements
 - **Low Latency**: Reduces KV cache I/O (PUT/GET) latency by up to **9x** compared to industry-leading alternatives through an **end-to-end zero-copy** mechanism and a highly efficient software stack
 - **High Bandwidth**: Maximizes I/O bandwidth by fully utilizing **ALL RDMA NICs** of client nodes (effectively eliminating the bottlenecks exposed in [DualPath](https://arxiv.org/abs/2602.21548))
 - **Ease of Use**: Offers seamless integration with popular inference engines, with deployment orchestrated via **Kubernetes (K8s)** for production-grade reliability  
@@ -257,7 +262,7 @@ vllm serve Qwen/Qwen2.5-7B-Instruct/ \
 - [x] Integrate with main-stream LLM inference platforms (SGLang, vLLM)
 - [ ] Support node-level GPU memory pool
 - [ ] Support multiple storage tiers (SSD / Remote Filesystem)
-- [ ] Support loseless KV compression and sparse KV retrieval
+- [ ] Support lossless KV compression and sparse KV retrieval
 
 ## Documentations
 * [Architecture](docs/architecture.md)
