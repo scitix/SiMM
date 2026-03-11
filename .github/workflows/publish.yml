@@ -1,0 +1,209 @@
+# ─────────────────────────────────────────────────────────────
+# SiMM CD — 构建发布产物并推送
+#
+# 触发：push 到 main/master 分支，或推送 v*.*.* tag
+#
+# 所需 Secrets（在 GitHub → Settings → Secrets and variables → Actions 中配置）：
+#   DOCKERHUB_USERNAME   DockerHub 用户名
+#   DOCKERHUB_TOKEN      DockerHub Access Token
+#   PYPI_TEST_TOKEN      PyPI Test 的 API Token（格式：pypi-xxxxxxx）
+#
+# GitHub Container Registry (ghcr.io) 使用自动提供的 GITHUB_TOKEN，无需额外配置。
+# ─────────────────────────────────────────────────────────────
+
+name: CD
+
+on:
+  push:
+    branches: [main, master]
+    tags:     ['v*.*.*']
+
+env:
+  IMAGE_NAME: simm
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # Job 1: 编译 Python Wheel 包
+  # ─────────────────────────────────────────────────────────────
+  build-wheel:
+    name: Build Python Wheel
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout source (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            build-essential cmake git curl wget lz4 \
+            libgflags-dev libgoogle-glog-dev libacl1-dev \
+            libprotobuf-dev protobuf-compiler \
+            libcurl4-openssl-dev libssl-dev zlib1g-dev \
+            libboost-all-dev libdouble-conversion-dev \
+            python${{ env.PYTHON_VERSION }} \
+            python${{ env.PYTHON_VERSION }}-dev \
+            python${{ env.PYTHON_VERSION }}-venv
+
+      - name: Setup Python venv
+        run: |
+          python${{ env.PYTHON_VERSION }} -m venv /opt/venv
+          echo "PATH=/opt/venv/bin:$PATH" >> $GITHUB_ENV
+          /opt/venv/bin/pip install --upgrade pip nanobind \
+            scikit-build-core build wheel
+
+      - name: Restore prometheus-cpp cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/lib/libprometheus*
+          key: prometheus-cpp-${{ runner.os }}-ubuntu22.04
+
+      - name: Build & install prometheus-cpp (if not cached)
+        run: |
+          if ! ldconfig -p | grep -q prometheus; then
+            git clone --depth=1 https://github.com/jupp0r/prometheus-cpp.git \
+              third_party/prometheus-cpp
+            cd third_party/prometheus-cpp
+            git submodule init && git submodule update
+            mkdir build && cd build
+            cmake .. -DBUILD_SHARED_LIBS=ON \
+                     -DENABLE_PUSH=OFF -DENABLE_COMPRESSION=OFF
+            make -j$(nproc)
+            sudo make install
+            sudo ldconfig
+            cd ../../..
+            rm -rf third_party/prometheus-cpp
+          fi
+
+      - name: Restore SICT cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/sict
+          key: sict-ubuntu-22_04-${{ runner.os }}
+
+      - name: Download SICT library (if not cached)
+        run: |
+          if [ ! -d "third_party/sict" ]; then
+            wget -q --no-check-certificate \
+              -O third_party/sict.tar.gz \
+              "https://oss-ap-southeast.scitix.ai/hisys-simm-depository/sict/ubuntu/22_04/sict.tar.gz"
+            cd third_party && tar -xzf sict.tar.gz && rm sict.tar.gz
+          fi
+
+      - name: Install Folly system dependencies
+        run: |
+          sudo third_party/folly/build/fbcode_builder/getdeps.py \
+            install-system-deps --recursive
+      
+      - name: Build with CMake (produces _kv.so + wheel)
+        run: |
+          ./build.sh --mode=release --clean --py_ver ${{ env.PYTHON_VERSION }}
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simm-wheel-py${{ env.PYTHON_VERSION }}
+          path: dist/*.whl
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────
+  # Job 2: 构建并推送 Docker 镜像
+  # ─────────────────────────────────────────────────────────────
+  docker:
+    name: Docker Build & Push
+    runs-on: ubuntu-22.04
+
+    permissions:
+      contents: read
+      packages: write   # 写入 GitHub Container Registry 所需
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 根据触发方式生成镜像标签：
+      #   push to main/master → :latest
+      #   push tag v1.2.3    → :v1.2.3 + :1.2.3 + :1.2 + :latest
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            PYTHON_VERSION=${{ env.PYTHON_VERSION }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────────
+  # Job 3: 上传 wheel 到 PyPI Test
+  #   仅在推送 tag（v*.*.*）时执行
+  # ─────────────────────────────────────────────────────────────
+  publish-pypi-test:
+    name: Publish to PyPI Test
+    runs-on: ubuntu-22.04
+    needs: build-wheel
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    environment:
+      name: pypi-test
+      url: https://test.pypi.org/project/simm/
+
+    permissions:
+      id-token: write   # 用于 PyPI Trusted Publisher（若配置了 OIDC）
+
+    steps:
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: simm-wheel-py${{ env.PYTHON_VERSION }}
+          path: dist/
+
+      - name: List wheel files
+        run: ls -lh dist/
+
+      - name: Upload to PyPI Test
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          password: ${{ secrets.PYPI_TEST_TOKEN }}
+          packages-dir: dist/
+          verbose: true
+          skip-existing: true
