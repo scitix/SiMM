@@ -260,6 +260,7 @@ vllm serve Qwen/Qwen2.5-7B-Instruct/ \
 
 ## Roadmaps
 - [x] Integrate with main-stream LLM inference platforms (SGLang, vLLM)
+- [x] Integrate with main-stream KVCache management system (FlexKV [PR](https://github.com/taco-project/FlexKV/pull/115))
 - [ ] Support node-level GPU memory pool
 - [ ] Support multiple storage tiers (SSD / Remote Filesystem)
 - [ ] Support lossless KV compression and sparse KV retrieval
