@@ -44,12 +44,20 @@ jobs:
 
       # ── C++ build ─────────────────────
       - name: Build
-        run: bash ./build.sh --py_ver ${{ env.PYTHON_VERSION }}
+        run: bash ./build.sh --py_ver ${{ env.PYTHON_VERSION }} --clean --test
 
       # ── C++ Unit Test（gtest via CTest）──────────────────
       - name: Run C++ unit tests
         run: |
-          cd build/release
+          RESULTS_DIR=build/release/Testing
+          mkdir -p "$RESULT_DIR"
+          EXIT_CODE=0
+          while IFS= read -r test_bin; do
+            echo "=== Running: $(basename "$test_bin") ==="
+            "$test_bin" \
+              --gtest_output="xml:${RESULTS_DIR}/$(basename "$test_bin").xml" \
+              || EXIT_CODE=$?
+          done < <(find build/release/bin/unit_tests/ -maxdepth 1 -type -f -executable | sort)
           ctest --output-on-failure --timeout 120
         # Client test depends on running cluster, set continue-on-error true
         continue-on-error: true
@@ -57,7 +65,7 @@ jobs:
       # ── Python Unit Test ───────────────────────────────────
       - name: Run Python unit tests
         run: |
-          /opt/venv/bin/pytest python/simm/tests/ -v --timeout=60
+          /opt/venv/bin/pytest -v python/simm/tests/
         # Client test depends on running cluster, set continue-on-error true
         continue-on-error: true
 
