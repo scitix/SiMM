@@ -72,7 +72,7 @@ cd ../../../
 rm -rf ./third_party/prometheus-cpp/ # cleanup after build & install
 
 #(BUG): on Ubuntu 24.04, nanobind will fail, need to add risky option(--break-system-packages)
-pip install nanobind --break-system-packages
+pip install nanobind
 if [[ $? -ne 0 ]]; then
   echo -e "${RED}[ERROR]${RESET}: Pip install nanobind failed, exit..."
   exit 1
