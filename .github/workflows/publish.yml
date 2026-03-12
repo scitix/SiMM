@@ -30,13 +30,9 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          sudo bash ./configure.sh
           sudo apt-get update -y
           sudo apt-get install -y \
-            build-essential cmake git curl wget lz4 \
-            libgflags-dev libgoogle-glog-dev libacl1-dev \
-            libprotobuf-dev protobuf-compiler \
-            libcurl4-openssl-dev libssl-dev zlib1g-dev \
-            libboost-all-dev libdouble-conversion-dev \
             python${{ env.PYTHON_VERSION }} \
             python${{ env.PYTHON_VERSION }}-dev \
             python${{ env.PYTHON_VERSION }}-venv
@@ -47,49 +43,6 @@ jobs:
           echo "PATH=/opt/venv/bin:$PATH" >> $GITHUB_ENV
           /opt/venv/bin/pip install --upgrade pip nanobind \
             scikit-build-core build wheel
-
-      - name: Restore prometheus-cpp cache
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/lib/libprometheus*
-          key: prometheus-cpp-${{ runner.os }}-ubuntu22.04
-
-      - name: Build & install prometheus-cpp (if not cached)
-        run: |
-          if ! ldconfig -p | grep -q prometheus; then
-            git clone --depth=1 https://github.com/jupp0r/prometheus-cpp.git \
-              third_party/prometheus-cpp
-            cd third_party/prometheus-cpp
-            git submodule init && git submodule update
-            mkdir build && cd build
-            cmake .. -DBUILD_SHARED_LIBS=ON \
-                     -DENABLE_PUSH=OFF -DENABLE_COMPRESSION=OFF
-            make -j$(nproc)
-            sudo make install
-            sudo ldconfig
-            cd ../../..
-            rm -rf third_party/prometheus-cpp
-          fi
-
-      - name: Restore SICT cache
-        uses: actions/cache@v4
-        with:
-          path: third_party/sict
-          key: sict-ubuntu-22_04-${{ runner.os }}
-
-      - name: Download SICT library (if not cached)
-        run: |
-          if [ ! -d "third_party/sict" ]; then
-            wget -q --no-check-certificate \
-              -O third_party/sict.tar.gz \
-              "https://oss-ap-southeast.scitix.ai/hisys-simm-depository/sict/ubuntu/22_04/sict.tar.gz"
-            cd third_party && tar -xzf sict.tar.gz && rm sict.tar.gz
-          fi
-
-      - name: Install Folly system dependencies
-        run: |
-          sudo third_party/folly/build/fbcode_builder/getdeps.py \
-            install-system-deps --recursive
       
       - name: Build with CMake (produces _kv.so + wheel)
         run: |
@@ -156,6 +109,8 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: Dockerfile
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -29,13 +29,9 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          sudo bash ./configure.sh
           sudo apt-get update -y
           sudo apt-get install -y \
-            build-essential cmake git curl wget lz4 \
-            libgflags-dev libgoogle-glog-dev libacl1-dev \
-            libprotobuf-dev protobuf-compiler \
-            libcurl4-openssl-dev libssl-dev zlib1g-dev \
-            libboost-all-dev libdouble-conversion-dev \
             python${{ env.PYTHON_VERSION }} \
             python${{ env.PYTHON_VERSION }}-dev \
             python${{ env.PYTHON_VERSION }}-venv
@@ -48,78 +44,23 @@ jobs:
           /opt/venv/bin/pip install nanobind pytest pytest-asyncio \
             scikit-build-core build wheel
 
-      # ── prometheus-cpp (Install from source) ────────
-      - name: Cache prometheus-cpp
-        id: cache-prometheus
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/lib/libprometheus*
-          key: prometheus-cpp-${{ runner.os }}-ubuntu22.04
-
-      - name: Build & install prometheus-cpp
-        if: steps.cache-prometheus.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth=1 https://github.com/jupp0r/prometheus-cpp.git \
-            third_party/prometheus-cpp
-          cd third_party/prometheus-cpp
-          git submodule init && git submodule update
-          mkdir build && cd build
-          cmake .. -DBUILD_SHARED_LIBS=ON \
-                   -DENABLE_PUSH=OFF \
-                   -DENABLE_COMPRESSION=OFF
-          make -j$(nproc)
-          sudo make install
-          sudo ldconfig
-          cd ../../..
-          rm -rf third_party/prometheus-cpp
-
-      # ── SICT (Install from OSS) ──────────────────────
-      - name: Cache SICT library
-        id: cache-sict
-        uses: actions/cache@v4
-        with:
-          path: third_party/sict
-          key: sict-ubuntu-22_04-${{ runner.os }}
-
-      - name: Download SICT library
-        if: steps.cache-sict.outputs.cache-hit != 'true'
-        run: |
-          wget -q --no-check-certificate \
-            -O third_party/sict.tar.gz \
-            "https://oss-ap-southeast.scitix.ai/hisys-simm-depository/sict/ubuntu/22_04/sict.tar.gz"
-          cd third_party && tar -xzf sict.tar.gz && rm sict.tar.gz
-
-      # ── Folly Dependency ────────────────────────────────────────
-      - name: Install Folly system dependencies
-        run: |
-          sudo third_party/folly/build/fbcode_builder/getdeps.py \
-            install-system-deps --recursive
-
       # ── C++ build ─────────────────────
-      - name: CMake configure
-        run: |
-          cmake \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DENABLE_TESTS=ON \
-            -DPython_EXECUTABLE=/opt/venv/bin/python${{ env.PYTHON_VERSION }} \
-            -DPython3_EXECUTABLE=/opt/venv/bin/python${{ env.PYTHON_VERSION }} \
-            -Bbuild/release \
-            -S.
-
       - name: Build
-        run: cmake --build build/release -j$(nproc)
+        run: bash ./build.sh --py_ver ${{ env.PYTHON_VERSION }}
 
       # ── C++ Unit Test（gtest via CTest）──────────────────
       - name: Run C++ unit tests
         run: |
           cd build/release
           ctest --output-on-failure --timeout 120
+        # Client test depends on running cluster, set continue-on-error true
+        continue-on-error: true
 
       # ── Python Unit Test ───────────────────────────────────
       - name: Run Python unit tests
         run: |
           /opt/venv/bin/pytest python/simm/tests/ -v --timeout=60
-        # Python test depends on running cluster, set continue-on-error true
+        # Client test depends on running cluster, set continue-on-error true
         continue-on-error: true
 
       - name: Upload test results
