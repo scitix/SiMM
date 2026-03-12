@@ -7,10 +7,10 @@
 # SiMM client module owner
 src/client          @yuki-brook @Sebastian-Keith
 
-# SiMM client module owner
+# SiMM cluster manager module owner
 src/cluster_manager @Sebastian-Keith @yuki-brook
 
-# SiMM client module owner
+# SiMM data server module owner
 src/data_server     @ChillyAokiji @Sebastian-Keith
 
 # SiMM common module owner
