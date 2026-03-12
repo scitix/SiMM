@@ -49,7 +49,7 @@ git submodule update --init --recursive
 echo -e "${GREEN}[INFO]${RESET}: git submodule update done, continue..."
 
 echo ; echo "=== Install Basic Dependency ==="
-sudo apt-get uninstall -y libunwind-14-dev
+sudo apt-get remove -y libunwind-14-dev
 sudo apt-get install -y libunwind-dev libgflags-dev libgoogle-glog-dev libacl1-dev libprotobuf-dev \
                         protobuf-compiler libcurl4-openssl-dev libssl-dev zlib1g-dev \
                         libboost-all-dev libdouble-conversion-dev
