@@ -9,6 +9,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install Python and other build dependencies
 RUN apt-get update && apt-get install -y \
+    linux-tools-common rsyslog perftest \
+    rdma-core ibverbs-providers infiniband-diags ibverbs-utils \
+    git cmake build-essential vim python3-pip lz4 curl \
+    && add-apt-repository ppa:deadsnakes/ppa -y \
+    && apt-get update && apt-get install -y \
     python${PYTHON_VERSION} python${PYTHON_VERSION}-dev \
     python${PYTHON_VERSION}-venv
 
