@@ -2,7 +2,7 @@
 # The last matching pattern has the highest precedence.
 
 # Default owners for the entire repository (unless overridden by a more specific pattern)
-* @Sebastian-Keith @yuki-brook @Kuzan @Vincent # Usernames and teams with write access are valid owners
+* @Sebastian-Keith @yuki-brook @ChillyAokiji @vincent-scitix # Usernames and teams with write access are valid owners
 
 # SiMM client module owner
 src/client          @yuki-brook @Sebastian-Keith
@@ -11,10 +11,10 @@ src/client          @yuki-brook @Sebastian-Keith
 src/cluster_manager @Sebastian-Keith @yuki-brook
 
 # SiMM client module owner
-src/data_server     @Kuzan @Sebastian-Keith
+src/data_server     @ChillyAokiji @Sebastian-Keith
 
 # SiMM common module owner
-src/common          @Sebastian-Keith @Kuzan @yuki-brook
+src/common          @Sebastian-Keith @ChillyAokiji @yuki-brook
 
 # Root README owner
 README.md           @Sebastian-Keith
