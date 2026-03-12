@@ -50,7 +50,7 @@ jobs:
       - name: Run C++ unit tests
         run: |
           RESULTS_DIR=build/release/Testing
-          mkdir -p "$RESULT_DIR"
+          mkdir -p "$RESULTS_DIR"
           EXIT_CODE=0
           while IFS= read -r test_bin; do
             echo "=== Running: $(basename "$test_bin") ==="
