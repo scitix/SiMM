@@ -57,8 +57,8 @@ jobs:
             "$test_bin" \
               --gtest_output="xml:${RESULTS_DIR}/$(basename "$test_bin").xml" \
               || EXIT_CODE=$?
-          done < <(find build/release/bin/unit_tests/ -maxdepth 1 -type -f -executable | sort)
-          ctest --output-on-failure --timeout 120
+          done < <(find build/release/bin/unit_tests/ -maxdepth 1 -type f -executable | sort)
+          exit $EXIT_CODE
         # Client test depends on running cluster, set continue-on-error true
         continue-on-error: true
 
