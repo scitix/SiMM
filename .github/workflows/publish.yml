@@ -42,7 +42,7 @@ jobs:
           python${{ env.PYTHON_VERSION }} -m venv /opt/venv
           echo "PATH=/opt/venv/bin:$PATH" >> $GITHUB_ENV
           /opt/venv/bin/pip install --upgrade pip nanobind \
-            scikit-build-core build wheel
+            scikit-build-core build wheel torch
       
       - name: Build with CMake (produces _kv.so + wheel)
         run: |

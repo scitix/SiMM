@@ -40,11 +40,11 @@ jobs:
           echo "PATH=/opt/venv/bin:$PATH" >> $GITHUB_ENV
           /opt/venv/bin/pip install --upgrade pip
           /opt/venv/bin/pip install nanobind pytest pytest-asyncio \
-            scikit-build-core build wheel
+            scikit-build-core build wheel torch
 
       # ── C++ build ─────────────────────
       - name: Build
-        run: bash ./build.sh --py_ver ${{ env.PYTHON_VERSION }} --clean --test
+        run: bash ./build.sh --mode=release --py_ver ${{ env.PYTHON_VERSION }} --clean --test
 
       # ── C++ Unit Test（gtest via CTest）──────────────────
       - name: Run C++ unit tests
