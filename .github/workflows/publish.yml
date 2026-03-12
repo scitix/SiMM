@@ -1,14 +1,6 @@
 # ─────────────────────────────────────────────────────────────
-# SiMM CD — 构建发布产物并推送
+# SiMM CD
 #
-# 触发：push 到 main/master 分支，或推送 v*.*.* tag
-#
-# 所需 Secrets（在 GitHub → Settings → Secrets and variables → Actions 中配置）：
-#   DOCKERHUB_USERNAME   DockerHub 用户名
-#   DOCKERHUB_TOKEN      DockerHub Access Token
-#   PYPI_TEST_TOKEN      PyPI Test 的 API Token（格式：pypi-xxxxxxx）
-#
-# GitHub Container Registry (ghcr.io) 使用自动提供的 GITHUB_TOKEN，无需额外配置。
 # ─────────────────────────────────────────────────────────────
 
 name: CD
@@ -24,7 +16,7 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────
-  # Job 1: 编译 Python Wheel 包
+  # Job 1: Compile Python Wheel
   # ─────────────────────────────────────────────────────────────
   build-wheel:
     name: Build Python Wheel
@@ -111,7 +103,7 @@ jobs:
           retention-days: 7
 
   # ─────────────────────────────────────────────────────────────
-  # Job 2: 构建并推送 Docker 镜像
+  # Job 2: Build and push Docker image
   # ─────────────────────────────────────────────────────────────
   docker:
     name: Docker Build & Push
@@ -119,7 +111,7 @@ jobs:
 
     permissions:
       contents: read
-      packages: write   # 写入 GitHub Container Registry 所需
+      packages: write
 
     steps:
       - name: Checkout source
@@ -143,7 +135,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 根据触发方式生成镜像标签：
+      # Generate image tag according to branch：
       #   push to main/master → :latest
       #   push tag v1.2.3    → :v1.2.3 + :1.2.3 + :1.2 + :latest
       - name: Extract Docker metadata
@@ -173,8 +165,8 @@ jobs:
           cache-to:   type=gha,mode=max
 
   # ─────────────────────────────────────────────────────────────
-  # Job 3: 上传 wheel 到 PyPI Test
-  #   仅在推送 tag（v*.*.*）时执行
+  # Job 3: upload wheel to PyPI Test
+  #   run when push to tag(v*.*.*)
   # ─────────────────────────────────────────────────────────────
   publish-pypi-test:
     name: Publish to PyPI Test
@@ -187,7 +179,7 @@ jobs:
       url: https://test.pypi.org/project/simm/
 
     permissions:
-      id-token: write   # 用于 PyPI Trusted Publisher（若配置了 OIDC）
+      id-token: write
 
     steps:
       - name: Download wheel artifact

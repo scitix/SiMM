@@ -1,7 +1,5 @@
 # ─────────────────────────────────────────────────────────────
-# SiMM CI — 编译 + 单元测试
-#
-# 触发：所有分支 push 及 Pull Request
+# SiMM CI — Compile + UnitTest
 # ─────────────────────────────────────────────────────────────
 
 name: CI
@@ -17,7 +15,7 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────
-  # Job 1: 编译 + 单元测试
+  # Job 1: Build + Test
   # ─────────────────────────────────────────────────────────────
   build-and-test:
     name: Build & Test (C++ + Python)
@@ -29,7 +27,6 @@ jobs:
         with:
           submodules: recursive
 
-      # ── 系统依赖 ──────────────────────────────────────────
       - name: Install system dependencies
         run: |
           sudo apt-get update -y
@@ -43,7 +40,6 @@ jobs:
             python${{ env.PYTHON_VERSION }}-dev \
             python${{ env.PYTHON_VERSION }}-venv
 
-      # ── Python 虚拟环境 ───────────────────────────────────
       - name: Setup Python venv
         run: |
           python${{ env.PYTHON_VERSION }} -m venv /opt/venv
@@ -52,7 +48,7 @@ jobs:
           /opt/venv/bin/pip install nanobind pytest pytest-asyncio \
             scikit-build-core build wheel
 
-      # ── prometheus-cpp（第三方，需要从源码编译安装）────────
+      # ── prometheus-cpp (Install from source) ────────
       - name: Cache prometheus-cpp
         id: cache-prometheus
         uses: actions/cache@v4
@@ -77,7 +73,7 @@ jobs:
           cd ../../..
           rm -rf third_party/prometheus-cpp
 
-      # ── SICT 网络库（从公开 OSS 下载）──────────────────────
+      # ── SICT (Install from OSS) ──────────────────────
       - name: Cache SICT library
         id: cache-sict
         uses: actions/cache@v4
@@ -93,13 +89,13 @@ jobs:
             "https://oss-ap-southeast.scitix.ai/hisys-simm-depository/sict/ubuntu/22_04/sict.tar.gz"
           cd third_party && tar -xzf sict.tar.gz && rm sict.tar.gz
 
-      # ── Folly 依赖 ────────────────────────────────────────
+      # ── Folly Dependency ────────────────────────────────────────
       - name: Install Folly system dependencies
         run: |
           sudo third_party/folly/build/fbcode_builder/getdeps.py \
             install-system-deps --recursive
 
-      # ── C++ 编译（Release + 测试开启）─────────────────────
+      # ── C++ build ─────────────────────
       - name: CMake configure
         run: |
           cmake \
@@ -113,20 +109,19 @@ jobs:
       - name: Build
         run: cmake --build build/release -j$(nproc)
 
-      # ── C++ 单元测试（gtest via CTest）──────────────────
+      # ── C++ Unit Test（gtest via CTest）──────────────────
       - name: Run C++ unit tests
         run: |
           cd build/release
           ctest --output-on-failure --timeout 120
 
-      # ── Python 单元测试 ───────────────────────────────────
+      # ── Python Unit Test ───────────────────────────────────
       - name: Run Python unit tests
         run: |
           /opt/venv/bin/pytest python/simm/tests/ -v --timeout=60
-        # 若 Python 测试依赖正在运行的集群，可将 continue-on-error 设为 true
+        # Python test depends on running cluster, set continue-on-error true
         continue-on-error: true
 
-      # ── 上传测试报告 ──────────────────────────────────────
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
