@@ -52,7 +52,7 @@ echo ; echo "=== Install Basic Dependency ==="
 sudo apt-get remove -y libunwind-14-dev
 sudo apt-get install -y libunwind-dev libgflags-dev libgoogle-glog-dev libacl1-dev libprotobuf-dev \
                         protobuf-compiler libcurl4-openssl-dev libssl-dev zlib1g-dev \
-                        libboost-all-dev libdouble-conversion-dev
+                        libboost-all-dev libdouble-conversion-dev wget
 if [[ $? -ne 0 ]]; then
   echo -e "${RED}[ERROR]${RESET}: Install dependency packages failed, exit..."
   exit 1

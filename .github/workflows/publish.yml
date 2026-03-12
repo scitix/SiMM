@@ -141,16 +141,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: simm-wheel-py${{ env.PYTHON_VERSION }}
-          path: dist/
+          path: python/dist/
 
       - name: List wheel files
-        run: ls -lh dist/
+        run: ls -lh python/dist/
 
       - name: Upload to PyPI Test
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
           password: ${{ secrets.PYPI_TEST_TOKEN }}
-          packages-dir: dist/
+          packages-dir: python/dist/
           verbose: true
           skip-existing: true
