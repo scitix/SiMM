@@ -2,6 +2,10 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/version.py.in
                ${CMAKE_CURRENT_SOURCE_DIR}/simm/version.py)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/setup.py.in
                ${CMAKE_CURRENT_SOURCE_DIR}/setup.py)
+configure_file(${CMAKE_SOURCE_DIR}/README.md
+               ${CMAKE_CURRENT_SOURCE_DIR}/README.md COPYONLY)
+configure_file(${CMAKE_SOURCE_DIR}/LICENSE
+               ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE COPYONLY)
 
 execute_process(
     COMMAND 
