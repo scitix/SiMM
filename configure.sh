@@ -51,7 +51,7 @@ echo -e "${GREEN}[INFO]${RESET}: git submodule update done, continue..."
 echo ; echo "=== Install Basic Dependency ==="
 sudo apt-get install -y libgflags-dev libgoogle-glog-dev libacl1-dev libprotobuf-dev \
                         protobuf-compiler libcurl4-openssl-dev libssl-dev zlib1g-dev \
-                        libboost-all-dev libdouble-conversion-dev  >/dev/null 2>&1
+                        libboost-all-dev libdouble-conversion-dev
 if [[ $? -ne 0 ]]; then
   echo -e "${RED}[ERROR]${RESET}: Install dependency packages failed, exit..."
   #exit 1
