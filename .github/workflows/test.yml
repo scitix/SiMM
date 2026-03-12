@@ -54,7 +54,7 @@ jobs:
           EXIT_CODE=0
           while IFS= read -r test_bin; do
             echo "=== Running: $(basename "$test_bin") ==="
-            "$test_bin" \
+            sudo "$test_bin" \
               --gtest_output="xml:${RESULTS_DIR}/$(basename "$test_bin").xml" \
               || EXIT_CODE=$?
           done < <(find build/release/bin/unit_tests/ -maxdepth 1 -type f -executable | sort)
