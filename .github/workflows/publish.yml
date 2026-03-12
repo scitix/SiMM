@@ -52,7 +52,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: simm-wheel-py${{ env.PYTHON_VERSION }}
-          path: dist/*.whl
+          path: python/dist/*.whl
           retention-days: 7
 
   # ─────────────────────────────────────────────────────────────
