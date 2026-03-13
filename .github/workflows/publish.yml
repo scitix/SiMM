@@ -48,6 +48,15 @@ jobs:
         run: |
           ./build.sh --mode=release --clean --py_ver ${{ env.PYTHON_VERSION }}
 
+      - name: Install auditwheel
+          run: pip install auditwheel patchelf
+
+      - name: Repair wheel (linux → manylinux)
+        run: |
+          auditwheel repair python/dist/*-linux_x86_64.whl \
+            --wheel-dir python/dist/
+          rm -f python/dist/*-linux_x86_64.whl
+
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
@@ -154,3 +163,39 @@ jobs:
           packages-dir: python/dist/
           verbose: true
           skip-existing: true
+
+    # ─────────────────────────────────────────────────────────────
+    # Job 4: upload wheel to PyPI
+    #   run when push to tag(v*.*.*)
+    #   requires publish-pypi-test to succeed first
+    # ─────────────────────────────────────────────────────────────
+    publish-pypi:
+      name: Publish to PyPI
+      runs-on: ubuntu-22.04
+      needs: publish-pypi-test
+      if: startsWith(github.ref, 'refs/tags/v')
+
+      environment:
+        name: pypi
+        url: https://pypi.org/project/simm/
+
+      permissions:
+        id-token: write
+
+      steps:
+        - name: Download wheel artifact
+          uses: actions/download-artifact@v4
+          with:
+            name: simm-wheel-py${{ env.PYTHON_VERSION }}
+            path: python/dist/
+
+        - name: List wheel files
+          run: ls -lh python/dist/
+
+        - name: Upload to PyPI
+          uses: pypa/gh-action-pypi-publish@release/v1
+          with:
+            password: ${{ secrets.PYPI_TOKEN }}
+            packages-dir: python/dist/
+            verbose: true
+            skip-existing: true

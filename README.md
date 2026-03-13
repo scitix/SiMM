@@ -16,7 +16,7 @@ Seamlessly integrated with leading inference engines like SGLang and vLLM, enabl
 - **High Bandwidth**: Maximizes I/O bandwidth by fully utilizing **ALL RDMA NICs** of client nodes (effectively eliminating the bottlenecks exposed in [DualPath](https://arxiv.org/abs/2602.21548))
 - **Ease of Use**: Offers seamless integration with popular inference engines, with deployment orchestrated via **Kubernetes (K8s)** for production-grade reliability  
   
-Under multi-turn long-context LLM workloads with significant KV cache reuse, **SiMM drastically reduces prefill latency (TTFT)** by transforming the prefill phase from a compute-heavy task into a high-speed I/O retrieval operation. Under 32K context length, SiMM achieves **3.1x** speedup over "No Cache" configuration and **2.1x** speedup over local CPU caching, **1.2x** outperforming industry-leading alternatives [[details](#integration-with-vllmlmcache)].   
+Under multi-turn long-context LLM workloads with significant KV cache reuse, **SiMM drastically reduces prefill latency (TTFT)** by transforming the prefill phase from a compute-heavy task into a high-speed I/O retrieval operation. Under 32K context length, SiMM achieves **3.1x** speedup over "No Cache" configuration and **2.1x** speedup over local CPU caching, **1.2x** outperforming industry-leading alternatives [[details](#benchmark-with-vllmlmcache)].   
 <div align="center">
   <img src="docs/images/SiMM_LLM_Benchmark_Results.png" alt="SiMM LLM Benchmark results" width="75%" />
 </div>
