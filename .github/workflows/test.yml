@@ -1,0 +1,77 @@
+# ─────────────────────────────────────────────────────────────
+# SiMM CI — Compile + UnitTest
+# ─────────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main, master]
+
+env:
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # Job 1: Build + Test
+  # ─────────────────────────────────────────────────────────────
+  build-and-test:
+    name: Build & Test (C++ + Python)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout source (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo bash ./configure.sh
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            python${{ env.PYTHON_VERSION }} \
+            python${{ env.PYTHON_VERSION }}-dev \
+            python${{ env.PYTHON_VERSION }}-venv
+
+      - name: Setup Python venv
+        run: |
+          python${{ env.PYTHON_VERSION }} -m venv /opt/venv
+          echo "PATH=/opt/venv/bin:$PATH" >> $GITHUB_ENV
+          /opt/venv/bin/pip install --upgrade pip
+          /opt/venv/bin/pip install nanobind pytest pytest-asyncio \
+            scikit-build-core build wheel torch
+
+      # ── C++ build ─────────────────────
+      - name: Build
+        run: bash ./build.sh --mode=release --py_ver ${{ env.PYTHON_VERSION }} --clean --test
+
+      # ── C++ Unit Test（gtest via CTest）──────────────────
+      - name: Run C++ unit tests
+        run: |
+          RESULTS_DIR=build/release/Testing
+          mkdir -p "$RESULTS_DIR"
+          EXIT_CODE=0
+          while IFS= read -r test_bin; do
+            echo "=== Running: $(basename "$test_bin") ==="
+            sudo "$test_bin" \
+              --gtest_output="xml:${RESULTS_DIR}/$(basename "$test_bin").xml" \
+              || EXIT_CODE=$?
+          done < <(find build/release/bin/unit_tests/ -maxdepth 1 -type f -executable | sort)
+          exit $EXIT_CODE
+        # Client test depends on running cluster, set continue-on-error true
+        continue-on-error: true
+
+      # ── Python Unit Test ───────────────────────────────────
+      - name: Run Python unit tests
+        run: |
+          /opt/venv/bin/pytest -v python/simm/tests/
+        # Client test depends on running cluster, set continue-on-error true
+        continue-on-error: true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: build/release/Testing/

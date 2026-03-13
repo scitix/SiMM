@@ -1,0 +1,76 @@
+// 
+// Define various RPC messages between data servers and cluster manager.
+//
+// 1) Used by dataserver to send hand-shake to cluster manager to register itself
+// into the new deployed cluster. Cluster manager should respond dataserver with 
+// a error code, if succeed, it means this dataserver already registered and it 
+// can serve requests from clients.
+// 
+// 2) After registered as one node in cluster(receive rpc respone from cm), dataserver
+// should send heartbeat to cluster manager periodically(e.g. 5 seconds) to notify 
+// its alive status.
+//
+// 3) When global shards routing table in CM changes (e.g. shard migraiton, node failure),
+// CM should notify the changes and send the related updated shards list to target dataserver 
+// which it should load and serve.
+//
+// 4) Cluster manager will send resource request to dataserver periodically(e.g. 1 min) 
+// to get resource usage stats of node level and shard level
+// 
+
+syntax = "proto3";
+
+import "common.proto";
+
+// ********** New Dataserver hand-shake RPC **********
+// SDS -> CM
+message NewNodeHandShakeRequestPB {
+  proto.common.NodeAddressPB node = 1;
+  repeated uint32 shard_ids = 2;
+}
+// CM -> SDS
+message NewNodeHandShakeResponsePB {
+  sint32 ret_code = 1;
+}
+
+// ********** DataServer Heartbeat RPC **********
+// SDS -> CM
+message DataServerHeartBeatRequestPB {
+  proto.common.NodeAddressPB node = 1;
+}
+// CM -> SDS
+message DataServerHeartBeatResponsePB {
+  sint32 ret_code = 1;
+}
+
+// ********** Notify Shards Mapping RPC **********
+// Whenever global shard routing table changes in CM, CM will notify all dataservers
+// the changes and send the updated shards list to target dataserver which it should
+// load and serve.
+// CM -> SDS
+message NotifyDataServerShardsMappingRequestPB {
+  repeated uint32 shard_ids = 1;
+  // uint32 global_routing_table_ver = 2;
+}
+// SDS -> CM
+message NotifyDataServerShardsMappingResponsePB {
+  sint32 ret_code = 1;
+}
+
+// ********** DataServer resource usage RPC **********
+message DataServerShardMemInfoPB {
+  uint32 shard_id = 1;
+  int64 shard_mem_used_bytes = 2;
+}
+// CM -> SDS
+message DataServerResourceRequestPB {
+  // just ping?
+}
+// SDS -> CM
+message DataServerResourceResponsePB {
+  proto.common.NodeAddressPB node = 1;
+  int64 mem_total_bytes = 2;
+  int64 mem_free_bytes = 3;
+  int64 mem_used_bytes = 4;
+  repeated DataServerShardMemInfoPB shard_mem_infos = 5;
+}

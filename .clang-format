@@ -1,0 +1,38 @@
+# Complete list of style options can be found at: 
+# https://clang.llvm.org/docs/ClangFormatStyleOptions.html
+# Google C++ code sytle can be found at:
+# https://google.github.io/styleguide/cppguide.html
+
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++20
+
+IndentWidth: 2
+ColumnLimit: 120
+AccessModifierOffset: -1
+
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignOperands: Align
+AlignEscapedNewlines: Left
+AlignTrailingComments: true
+
+AlwaysBreakTemplateDeclarations: true
+AllowAllArgumentsOnNextLine: true
+AllowAllConstructorInitializersOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+
+Cpp11BracedListStyle: true
+DerivePointerAlignment: false
+BitFieldColonSpacing: Both
+PointerAlignment: Right
+SpaceAfterTemplateKeyword: true
+FixNamespaceComments: true
+IncludeBlocks: Preserve
+
+BinPackArguments: false
+BinPackParameters: false

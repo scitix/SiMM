@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61", "wheel", "nanobind"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simm"
+dynamic = ["version"]
+description = "SiMM: Scalable in-Memory Middleware — high-performance distributed KV cache engine for LLM inference"
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { file = "LICENSE" }
+authors = [
+    { name = "Scitix AI Team", email = "brook@scitix.ai" },
+]
+keywords = [
+    "llm", "kv-cache", "inference", "rdma", "distributed", "sglang", "vllm",
+    "memory", "cache", "high-performance",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[project.urls]
+Homepage = "https://github.com/Scitix/SiMM"
+Repository = "https://github.com/Scitix/SiMM"
+"Bug Tracker" = "https://github.com/Scitix/SiMM/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["simm*"]
+
+[tool.setuptools.package-data]
+"simm.kv" = ["*.so"]
+
+[tool.setuptools.dynamic]
+version = {attr = "simm.version.version"}

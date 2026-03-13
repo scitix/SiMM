@@ -1,0 +1,23 @@
+# Each line defines a file pattern followed by one or more owners.
+# The last matching pattern has the highest precedence.
+
+# Default owners for the entire repository (unless overridden by a more specific pattern)
+* @Sebastian-Keith @yuki-brook @ChillyAokiji @vincent-scitix # Usernames and teams with write access are valid owners
+
+# SiMM client module owner
+src/client          @yuki-brook @Sebastian-Keith
+
+# SiMM cluster manager module owner
+src/cluster_manager @Sebastian-Keith @yuki-brook
+
+# SiMM data server module owner
+src/data_server     @ChillyAokiji @Sebastian-Keith
+
+# SiMM common module owner
+src/common          @Sebastian-Keith @ChillyAokiji @yuki-brook
+
+# Root README owner
+README.md           @Sebastian-Keith
+
+# docs owner
+docs/               @Sebastian-Keith

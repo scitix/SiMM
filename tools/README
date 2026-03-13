@@ -1,0 +1,10 @@
+Add simm command tools only for maintainence usage.
+
+Tool Name Convention:
+  simm_xxx_admin
+
+  e.g. global flags admin tool, use simm_flags_admin.cc as source code file name, and
+  cmake & make will output simm_flags_admin binary to related directory
+
+  simm_xxx_bench
+  e.g. io bench tool to test simm performance, including io latency, iops, throughput

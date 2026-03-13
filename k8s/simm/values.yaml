@@ -1,0 +1,54 @@
+# Default values for SiMM.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+image:
+  repository: docker.io/simm
+  pullPolicy: Always
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "v0.1.0-py310"
+
+# namespace for Cluster Manager and Data Server, empty using default namespace
+namespace: ""
+
+# Data server num
+replicaCount: 2
+
+podAnnotations: {}
+
+podSecurityContext: {}
+
+securityContext:
+  privileged: true
+  capabilities:
+    add:
+    - IPC_LOCK
+    - SYS_ADMIN
+
+resources:
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  limits:
+    cpu: 50
+    memory: 50Gi
+    rdma/hca_shared_devices_all: "1"
+  requests:
+    cpu: 10
+    memory: 10Gi
+    rdma/hca_shared_devices_all: "1"
+
+simm:
+  # config options about simm data server
+  clustermanagerPort: 30001
+  dataserverPort: 40000
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+clustermanager_debug: ""
+dataserver_debug: ""

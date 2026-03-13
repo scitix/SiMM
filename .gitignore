@@ -1,0 +1,30 @@
+# editor tmpfiles
+*.sw*
+
+# vscode files
+*.vscode
+*.DS_Store
+*.code-workspace
+
+# build directories
+build/
+output/
+
+# objs or binaries
+*.a
+*.so
+*.exe
+*.out
+
+# CMake
+Makefile
+CMakeCache.txt
+CMakeFiles/
+_deps/
+compile_commands.json
+
+# patch files
+*.patch
+
+# clang cache
+.cache/

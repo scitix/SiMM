@@ -1,0 +1,79 @@
+// 
+// Define various RPC messages between simm clients and cluster manager.
+// 
+
+syntax = "proto3";
+
+import "common.proto";
+
+message DataServerShardsEntry {
+  proto.common.NodeAddressPB data_server_address = 1;
+  repeated uint32 shard_ids = 2;
+}
+
+// ********** Client Query Shard Routing Table RPCS **********
+// Clnt -> CM
+message QueryShardRoutingTableSingleRequestPB {
+  uint32 shard_id = 1;
+}
+// CM -> Clnt
+message QueryShardRoutingTableSingleResponsePB {
+  sint32 ret_code = 1;
+  repeated DataServerShardsEntry shard_info = 2;
+}
+// Clnt -> CM
+message QueryShardRoutingTableBatchRequestPB {
+  repeated uint32 shard_ids = 1;
+}
+// CM -> Clnt
+message QueryShardRoutingTableBatchResponsePB {
+  sint32 ret_code = 1;
+  repeated DataServerShardsEntry shard_info = 2;
+}
+// Clnt -> CM
+message QueryShardRoutingTableAllRequestPB {
+  // just ping?
+}
+// CM -> Clnt
+message QueryShardRoutingTableAllResponsePB {
+  sint32 ret_code = 1;
+  repeated DataServerShardsEntry shard_info = 2;
+}
+
+// ********** List Nodes RPCS **********
+// Node Resource Information
+message NodeResourcePB {
+  int64 mem_free_bytes = 1;
+  int64 mem_total_bytes = 2;
+  int64 mem_used_bytes = 3;
+}
+
+// Node Status Information
+message NodeInfoPB {
+  proto.common.NodeAddressPB node_address = 1;
+  sint32 node_status = 2;  // NodeStatus enum: RUNNING = 1, DEAD = 0
+  NodeResourcePB resource = 3;
+}
+
+// Clnt -> CM
+message ListNodesRequestPB {
+  // just ping
+}
+
+// CM -> Clnt
+message ListNodesResponsePB {
+  sint32 ret_code = 1;
+  repeated NodeInfoPB nodes = 2;
+}
+
+// ********** Set Node Status RPCS **********
+// Clnt -> CM
+message SetNodeStatusRequestPB {
+  proto.common.NodeAddressPB node = 1;
+  sint32 node_status = 2;  // NodeStatus enum: RUNNING = 1, DEAD = 0
+}
+
+// CM -> Clnt
+message SetNodeStatusResponsePB {
+  sint32 ret_code = 1;
+}
