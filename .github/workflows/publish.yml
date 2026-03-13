@@ -49,7 +49,7 @@ jobs:
           ./build.sh --mode=release --clean --py_ver ${{ env.PYTHON_VERSION }}
 
       - name: Install auditwheel
-          run: pip install auditwheel patchelf
+        run: pip install auditwheel patchelf
 
       - name: Repair wheel (linux → manylinux)
         run: |
