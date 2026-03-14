@@ -5,8 +5,8 @@
 SiMM built on Folly Codes with tag [v2025.07.07.00](https://github.com/facebook/folly/tree/v2025.07.07.00) defaultly, such release version had fmt lib related build issue, **so you need to patch the fix locally before SiMM build** : 
 - git issue : https://github.com/facebook/folly/issues/2468
 - mr link : https://github.com/facebook/folly/commit/03ba79afc093424ba73ebe23c8b01a3c39b908ef
-<div align="center">
-  <img src="docs/images/folly_v20250707_fmt_patch.png" alt="Folly Fmt build issue" width="70%" />
+<div align="left">
+  <img src="images/folly_v20250707_fmt_patch.png" alt="Folly Fmt build issue" width="80%" />
 </div>
 
 ### 1.2 Folly(liburing)
