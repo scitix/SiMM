@@ -5,9 +5,6 @@
   </h2>
 </div>
 
-  :fire: Go with us to enjoy Nvidia GTC happy hours [SGLang x RadixArk](https://luma.com/hgj595as)
-  :point_right: 03/17 06:30 PM PDT | San Jose, California
-
 ## About
 **SiMM** is a high-performance, scalable Key-Value (KV) cache engine designed for LLM inference workloads. It addresses the critical bottlenecks in long-context prompts and multi-turn agent interactions by providing a dedicated, fast memory pool for KV cache storage.  
 Seamlessly integrated with leading inference engines like SGLang and vLLM, enabling offload and retrieve KV caches from SiMM, inference engines can bypass redundant prefill computations, significantly save GPU cycles and drastically reduce Time to First Token (TTFT). SiMM is already proven and validated in production environments.  
@@ -278,7 +275,7 @@ vllm serve Qwen/Qwen2.5-7B-Instruct/ \
 * [FAQ](docs/faq.md)
 
 ## Contact us
-<a href="https://join.slack.com/share/enQtMTA2MTg3NTY0MjQ1NzgtZTc1OGFkMTMwMjQ5YTI3MjBiYThlNDZlMDFiMDRjOWMzNDVmYjViMGM5OTRlNGQwZjNmNzMzYzFjMWY4MGJkOA" target="_blank"><strong>Slack Channel: simm-open-source</strong></a>   
+<a href="https://join.slack.com/share/enQtMTA3NTU5NDU5Nzg1NDctNTA1NTNhNjBkNzE2ZTM0N2I1ZDIyZTJmOTg2YTljOGE2ZjE0Y2FlZTNkMTg5NTQzYTc5ZmM1YTU3YzQzMGExNg" target="_blank"><strong>Slack Channel: simm-open-source</strong></a>   
 
 ## License
 SiMM is under Apache License v2.0, please see [`LICENSE`](LICENSE) for details
