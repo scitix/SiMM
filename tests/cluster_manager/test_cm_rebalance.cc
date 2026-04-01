@@ -37,6 +37,24 @@ DECLARE_string(cm_log_file);
 namespace simm {
 namespace cm {
 
+namespace {
+
+template <typename Predicate>
+bool WaitUntil(Predicate pred,
+               std::chrono::milliseconds timeout,
+               std::chrono::milliseconds poll_interval = std::chrono::milliseconds(50)) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (pred()) {
+      return true;
+    }
+    std::this_thread::sleep_for(poll_interval);
+  }
+  return pred();
+}
+
+}  // namespace
+
 class ClusterManagerRebalanceTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -70,9 +88,15 @@ class ClusterManagerRebalanceTest : public ::testing::Test {
 // TODO: move MockDS to a common test utils file?
 class MockDataServer {
  public:
-  MockDataServer(const std::string &ip, int port) : ip_(ip), port_(port), is_running_(false), should_stop_(false) {
-    node_address_ = std::make_shared<simm::common::NodeAddress>(ip, port);
-  }
+  MockDataServer(const std::string &ip,
+                 int port,
+                 std::chrono::milliseconds heartbeat_interval = std::chrono::seconds(2))
+      : ip_(ip),
+        port_(port),
+        node_address_(std::make_shared<simm::common::NodeAddress>(ip, port)),
+        heartbeat_interval_(heartbeat_interval),
+        is_running_(false),
+        should_stop_(false) {}
 
   ~MockDataServer() { Stop(); }
 
@@ -116,7 +140,7 @@ class MockDataServer {
  private:
   void SendHandshakeRequest() {
     try {
-      sicl::rpc::SiRPC *sirpc_client;
+      sicl::rpc::SiRPC *sirpc_client = nullptr;
       sicl::rpc::SiRPC::newInstance(sirpc_client, false);
 
       sicl::rpc::RpcContext *ctx_p = nullptr;
@@ -131,13 +155,15 @@ class MockDataServer {
       node_field->set_ip(ip_);
       node_field->set_port(port_);
 
-      auto hs_done_cb = [](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+      auto hs_done_cb = [hs_resp](const google::protobuf::Message *rsp,
+                                  const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
         if (ctx->ErrorCode() == sicl::transport::Result::SICL_SUCCESS) {
           auto response = dynamic_cast<const NewNodeHandShakeResponsePB *>(rsp);
           MLOG_INFO("Handshake successful, ret_code: {}", response->ret_code());
         } else {
           MLOG_ERROR("Handshake failed, error: {}", ctx->ErrorCode());
         }
+        delete hs_resp;
       };
 
       sirpc_client->SendRequest(
@@ -166,13 +192,13 @@ class MockDataServer {
         MLOG_ERROR("Exception in HeartbeatLoop: {}", e.what());
       }
 
-      std::this_thread::sleep_for(std::chrono::seconds(2));
+      std::this_thread::sleep_for(heartbeat_interval_);
     }
   }
 
   void SendHeartbeat() {
     try {
-      sicl::rpc::SiRPC *sirpc_client;
+      sicl::rpc::SiRPC *sirpc_client = nullptr;
       sicl::rpc::SiRPC::newInstance(sirpc_client, false);
 
       sicl::rpc::RpcContext *ctx_p = nullptr;
@@ -186,12 +212,14 @@ class MockDataServer {
       node_field->set_ip(ip_);
       node_field->set_port(port_);
 
-      auto hb_done_cb = [](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+      auto hb_done_cb = [hb_resp](const google::protobuf::Message *rsp,
+                                  const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
         if (ctx->ErrorCode() == sicl::transport::Result::SICL_SUCCESS) {
           MLOG_DEBUG("Heartbeat successful");
         } else {
           MLOG_ERROR("Heartbeat failed, error: {}", ctx->ErrorCode());
         }
+        delete hb_resp;
       };
 
       sirpc_client->SendRequest("127.0.0.1",
@@ -211,6 +239,7 @@ class MockDataServer {
   std::string ip_;
   int port_;
   std::shared_ptr<simm::common::NodeAddress> node_address_;
+  std::chrono::milliseconds heartbeat_interval_;
   std::atomic<bool> is_running_;
   std::atomic<bool> should_stop_;
   std::jthread heartbeat_thread_;
@@ -218,7 +247,7 @@ class MockDataServer {
 
 TEST_F(ClusterManagerRebalanceTest, TestShardRebalanceAfterNodeFailure) {
   constexpr uint32_t kDataserverNum = 4;
-  const std::string ip_prefix = "192.168.0."; // TODO: remove this?
+  const std::string ip_prefix = "192.168.0.";  // TODO: remove this?
   const int base_port = 40000;
 
   std::atomic<bool> cm_started{false};
@@ -245,7 +274,7 @@ TEST_F(ClusterManagerRebalanceTest, TestShardRebalanceAfterNodeFailure) {
     MLOG_INFO("Starting CM service...");
 
     simm::common::ModuleServiceState::GetInstance().Reset(FLAGS_cm_cluster_init_grace_period_inSecs);
-    
+
     // Should pre-init DS to avoid TooFew error
     std::vector<std::shared_ptr<simm::common::NodeAddress>> pre_init_servers;
     for (uint32_t i = 0; i < kDataserverNum; ++i) {
@@ -398,8 +427,8 @@ TEST_F(ClusterManagerRebalanceTest, TestShardRebalanceAfterNodeFailure) {
 
 TEST_F(ClusterManagerRebalanceTest, TestMultipleNodeFailures) {
   constexpr uint32_t kDataserverNum = 6;
-  constexpr uint32_t kFailureNum = 2; // TODO: what if remain nodes less than min req?
-  const std::string ip_prefix = "192.168.1."; // TODO: remove this?
+  constexpr uint32_t kFailureNum = 2;          // TODO: what if remain nodes less than min req?
+  const std::string ip_prefix = "192.168.1.";  // TODO: remove this?
   const int base_port = 41000;
 
   std::atomic<bool> cm_started{false};
@@ -530,7 +559,7 @@ TEST_F(ClusterManagerRebalanceTest, TestMultipleNodeFailures) {
 
       // No shards assigned to failed nodes
       for (const auto &failed_node : failed_nodes) {
-        EXPECT_NE(node_addr, failed_node) 
+        EXPECT_NE(node_addr, failed_node)
             << "Found shard " << entry.first << " still assigned to failed node " << failed_node;
       }
     }
@@ -578,9 +607,171 @@ TEST_F(ClusterManagerRebalanceTest, TestMultipleNodeFailures) {
   executor.join();
 }
 
+TEST_F(ClusterManagerRebalanceTest, TestFastTwoNodeFailuresOnFiveNodeCluster) {
+  constexpr uint32_t kDataserverNum = 5;
+  constexpr uint32_t kFailureNum = 2;
+  const std::string ip_prefix = "192.168.10.";
+  const int base_port = 42000;
+
+  auto old_grace_period = FLAGS_cm_cluster_init_grace_period_inSecs;
+  auto old_hb_timeout = FLAGS_cm_heartbeat_timeout_inSecs;
+  auto old_hb_scan_interval = FLAGS_cm_heartbeat_bg_scan_interval_inSecs;
+  FLAGS_cm_cluster_init_grace_period_inSecs = 2;
+  FLAGS_cm_heartbeat_timeout_inSecs = 1;
+  FLAGS_cm_heartbeat_bg_scan_interval_inSecs = 1;
+  auto restore_flags = folly::makeGuard([&]() {
+    FLAGS_cm_cluster_init_grace_period_inSecs = old_grace_period;
+    FLAGS_cm_heartbeat_timeout_inSecs = old_hb_timeout;
+    FLAGS_cm_heartbeat_bg_scan_interval_inSecs = old_hb_scan_interval;
+  });
+
+  std::atomic<bool> cm_started{false};
+  std::atomic<bool> test_completed{false};
+  folly::Baton<> cm_done;
+  folly::CPUThreadPoolExecutor executor(10);
+
+  auto shard_manager_ptr = std::make_shared<simm::cm::ClusterManagerShardManager>();
+  auto node_manager_ptr = std::make_shared<simm::cm::ClusterManagerNodeManager>();
+  auto hb_monitor_ptr = std::make_shared<simm::cm::ClusterManagerHBMonitor>(node_manager_ptr, shard_manager_ptr);
+  auto cm_service_ptr =
+      std::make_unique<simm::cm::ClusterManagerService>(shard_manager_ptr, node_manager_ptr, hb_monitor_ptr);
+
+  auto cm_thread = [&]() {
+    MLOG_INFO("Starting CM service for fast two-node failure test...");
+
+    simm::common::ModuleServiceState::GetInstance().Reset(FLAGS_cm_cluster_init_grace_period_inSecs);
+
+    auto ret = cm_service_ptr->Init();
+    EXPECT_EQ(ret, CommonErr::OK);
+
+    ret = cm_service_ptr->Start();
+    EXPECT_EQ(ret, CommonErr::OK);
+    EXPECT_TRUE(cm_service_ptr->IsRunning());
+
+    cm_started.store(true);
+    MLOG_INFO("CM service started successfully for fast two-node failure test");
+
+    while (!test_completed.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    MLOG_INFO("Stopping CM service for fast two-node failure test...");
+    ret = cm_service_ptr->Stop();
+    EXPECT_EQ(ret, CommonErr::OK);
+    cm_done.post();
+  };
+
+  executor.add(cm_thread);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  std::vector<std::unique_ptr<MockDataServer>> dataservers;
+  dataservers.reserve(kDataserverNum);
+  for (uint32_t i = 0; i < kDataserverNum; ++i) {
+    std::string ip = ip_prefix + std::to_string(i + 1);
+    int port = base_port + i;
+    auto ds = std::make_unique<MockDataServer>(ip, port, std::chrono::milliseconds(200));
+    auto ret = ds->Start();
+    EXPECT_EQ(ret, CommonErr::OK);
+    dataservers.push_back(std::move(ds));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  ASSERT_TRUE(WaitUntil([&]() { return cm_started.load(); }, std::chrono::milliseconds(3000)))
+      << "CM did not finish startup in time";
+
+  ASSERT_TRUE(WaitUntil([&]() { return node_manager_ptr->GetAllNodeAddress(true).size() == kDataserverNum; },
+                        std::chrono::milliseconds(1000)))
+      << "CM did not observe all dataservers as RUNNING in time";
+
+  auto initial_routing = shard_manager_ptr->QueryAllShardRoutingInfos();
+  ASSERT_EQ(initial_routing.size(), FLAGS_shard_total_num);
+  std::unordered_map<std::string, uint32_t> initial_shard_count;
+  for (const auto &entry : initial_routing) {
+    ASSERT_NE(entry.second, nullptr);
+    initial_shard_count[entry.second->toString()]++;
+  }
+  EXPECT_EQ(initial_shard_count.size(), kDataserverNum);
+
+  std::vector<std::string> failed_nodes;
+  for (uint32_t i = 0; i < kFailureNum; ++i) {
+    failed_nodes.push_back(dataservers[i]->GetAddressString());
+    auto ret = dataservers[i]->Stop();
+    EXPECT_EQ(ret, CommonErr::OK);
+  }
+
+  auto routing_rebalanced = [&]() {
+    if (node_manager_ptr->GetAllNodeAddress(true).size() != kDataserverNum - kFailureNum) {
+      return false;
+    }
+    auto routing = shard_manager_ptr->QueryAllShardRoutingInfos();
+    if (routing.size() != FLAGS_shard_total_num) {
+      return false;
+    }
+    std::unordered_set<std::string> target_nodes;
+    for (const auto &entry : routing) {
+      if (!entry.second) {
+        return false;
+      }
+      auto node_addr = entry.second->toString();
+      for (const auto &failed_node : failed_nodes) {
+        if (node_addr == failed_node) {
+          return false;
+        }
+      }
+      target_nodes.insert(node_addr);
+    }
+    return target_nodes.size() == kDataserverNum - kFailureNum;
+  };
+
+  ASSERT_TRUE(WaitUntil(routing_rebalanced, std::chrono::milliseconds(2500)))
+      << "CM did not finish two-node failure rebalance in time";
+
+  auto alive_nodes = node_manager_ptr->GetAllNodeAddress(true);
+  EXPECT_EQ(alive_nodes.size(), kDataserverNum - kFailureNum);
+
+  auto rebalanced_routing = shard_manager_ptr->QueryAllShardRoutingInfos();
+  ASSERT_EQ(rebalanced_routing.size(), FLAGS_shard_total_num);
+
+  std::unordered_map<std::string, uint32_t> rebalanced_shard_count;
+  std::unordered_set<std::string> nodes_with_shards;
+  for (const auto &entry : rebalanced_routing) {
+    ASSERT_NE(entry.second, nullptr);
+    std::string node_addr = entry.second->toString();
+    for (const auto &failed_node : failed_nodes) {
+      EXPECT_NE(node_addr, failed_node) << "Shard " << entry.first << " still points to failed node " << failed_node;
+    }
+    rebalanced_shard_count[node_addr]++;
+    nodes_with_shards.insert(node_addr);
+  }
+
+  EXPECT_EQ(nodes_with_shards.size(), kDataserverNum - kFailureNum);
+
+  uint32_t total_shards = 0;
+  for (const auto &[node_addr, shard_num] : rebalanced_shard_count) {
+    total_shards += shard_num;
+  }
+  EXPECT_EQ(total_shards, FLAGS_shard_total_num);
+
+  auto min_max = std::minmax_element(rebalanced_shard_count.begin(),
+                                     rebalanced_shard_count.end(),
+                                     [](const auto &a, const auto &b) { return a.second < b.second; });
+  ASSERT_NE(min_max.first, rebalanced_shard_count.end());
+  ASSERT_NE(min_max.second, rebalanced_shard_count.end());
+  EXPECT_LE(min_max.second->second - min_max.first->second, 3U);
+
+  for (size_t i = kFailureNum; i < dataservers.size(); ++i) {
+    dataservers[i]->Stop();
+  }
+
+  test_completed.store(true);
+  cm_done.wait();
+  executor.join();
+}
+
 TEST_F(ClusterManagerRebalanceTest, TestShardRebalanceOnlyOnce) {
   constexpr uint32_t kDataserverNum = 4;
-  const std::string ip_prefix = "192.168.0."; // TODO: remove this?
+  const std::string ip_prefix = "192.168.0.";  // TODO: remove this?
   const int base_port = 40000;
 
   std::atomic<bool> cm_started{false};
@@ -607,7 +798,7 @@ TEST_F(ClusterManagerRebalanceTest, TestShardRebalanceOnlyOnce) {
     MLOG_INFO("Starting CM service...");
 
     simm::common::ModuleServiceState::GetInstance().Reset(FLAGS_cm_cluster_init_grace_period_inSecs);
-    
+
     // Should pre-init DS to avoid TooFew error
     std::vector<std::shared_ptr<simm::common::NodeAddress>> pre_init_servers;
     for (uint32_t i = 0; i < kDataserverNum; ++i) {
@@ -747,7 +938,8 @@ TEST_F(ClusterManagerRebalanceTest, TestShardRebalanceOnlyOnce) {
   MLOG_INFO("Rebalance test completed successfully");
 
   // Sleep 2xhb time
-  std::this_thread::sleep_for(std::chrono::seconds((FLAGS_cm_heartbeat_timeout_inSecs + FLAGS_cm_heartbeat_bg_scan_interval_inSecs) * 2));
+  std::this_thread::sleep_for(
+      std::chrono::seconds((FLAGS_cm_heartbeat_timeout_inSecs + FLAGS_cm_heartbeat_bg_scan_interval_inSecs) * 2));
 
   // Clean up
   for (size_t i = 1; i < dataservers.size(); ++i) {

@@ -8,8 +8,12 @@
 #include <folly/coro/Synchronized.h>
 #include <folly/synchronization/Baton.h>
 
-#include "cm_shard_manager.h"
+#if defined(SIMM_UNIT_TEST)
+#include <gtest/gtest_prod.h>
+#endif
+
 #include "cm_node_manager.h"
+#include "cm_shard_manager.h"
 #include "common/base/common_types.h"
 #include "common/errcode/errcode_def.h"
 
@@ -21,13 +25,13 @@ class ClusterManagerHBMonitor : public std::enable_shared_from_this<ClusterManag
   ClusterManagerHBMonitor() = default;
   ClusterManagerHBMonitor(std::shared_ptr<simm::cm::ClusterManagerNodeManager> nm_ptr,
                           std::shared_ptr<simm::cm::ClusterManagerShardManager> sm_ptr)
-    : cm_node_manager_ptr_(nm_ptr), cm_shard_manager_ptr_(sm_ptr) {}
+      : cm_node_manager_ptr_(nm_ptr), cm_shard_manager_ptr_(sm_ptr) {}
   virtual ~ClusterManagerHBMonitor();
 
-  ClusterManagerHBMonitor(const ClusterManagerHBMonitor&) = delete;
-  ClusterManagerHBMonitor& operator=(const ClusterManagerHBMonitor&) = delete;
-  ClusterManagerHBMonitor(ClusterManagerHBMonitor&&) = delete;
-  ClusterManagerHBMonitor& operator=(ClusterManagerHBMonitor&&) = delete;
+  ClusterManagerHBMonitor(const ClusterManagerHBMonitor &) = delete;
+  ClusterManagerHBMonitor &operator=(const ClusterManagerHBMonitor &) = delete;
+  ClusterManagerHBMonitor(ClusterManagerHBMonitor &&) = delete;
+  ClusterManagerHBMonitor &operator=(ClusterManagerHBMonitor &&) = delete;
 
  public:
   error_code_t Init();
@@ -57,6 +61,7 @@ class ClusterManagerHBMonitor : public std::enable_shared_from_this<ClusterManag
 
 #if defined(SIMM_UNIT_TEST)
   FRIEND_TEST(ClusterManagerHBMonitorTest, TestHBMonitor);
+  FRIEND_TEST(ClusterManagerHBMonitorTest, TestRestartAfterStopResumesHeartbeatScanning);
 #endif
 };
 

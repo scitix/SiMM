@@ -10,11 +10,11 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/synchronization/Baton.h>
 
-#include "cluster_manager/cm_shard_manager.h"
 #include "cluster_manager/cm_hb_monitor.h"
-#include "cluster_manager/cm_service.h"
-#include "cluster_manager/cm_rpc_handler.h"
 #include "cluster_manager/cm_node_manager.h"
+#include "cluster_manager/cm_rpc_handler.h"
+#include "cluster_manager/cm_service.h"
+#include "cluster_manager/cm_shard_manager.h"
 #include "common/base/common_types.h"
 #include "common/errcode/errcode_def.h"
 #include "common/logging/logging.h"
@@ -39,22 +39,20 @@ using CmNMPtr = std::shared_ptr<simm::cm::ClusterManagerNodeManager>;
 
 class ClusterManagerHBMonitorTest : public ::testing::Test {
  protected:
-  enum class caseType : int {
-    OnRecvNodeHeartbeat = 1,
-    bgHBScanLoop = 2
-  };
+  enum class caseType : int { OnRecvNodeHeartbeat = 1, bgHBScanLoop = 2 };
 
   void SetUp() override {
-    #ifdef NDEBUG
-      simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{FLAGS_cm_log_file, "INFO"};
-    #else
-      simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{FLAGS_cm_log_file, "DEBUG"};
-    #endif
-      simm::logging::LoggerManager::Instance().UpdateConfig("cluster_manager", cm_log_config);
+#ifdef NDEBUG
+    simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{FLAGS_cm_log_file, "INFO"};
+#else
+    simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{FLAGS_cm_log_file, "DEBUG"};
+#endif
+    simm::logging::LoggerManager::Instance().UpdateConfig("cluster_manager", cm_log_config);
 
     cm_shard_manager_ptr_ = std::make_shared<simm::cm::ClusterManagerShardManager>();
     cm_node_manager_ptr_ = std::make_shared<simm::cm::ClusterManagerNodeManager>();
-    cm_hb_monitor_ptr_ = std::make_shared<simm::cm::ClusterManagerHBMonitor>(cm_node_manager_ptr_, cm_shard_manager_ptr_);
+    cm_hb_monitor_ptr_ =
+        std::make_shared<simm::cm::ClusterManagerHBMonitor>(cm_node_manager_ptr_, cm_shard_manager_ptr_);
     // cm_hb_monitor_ptr_->Init();
     // error_code_t ret = cm_hb_monitor_ptr_->Start();
     // EXPECT_EQ(ret, CommonErr::OK);
@@ -76,7 +74,7 @@ class ClusterManagerHBMonitorTest : public ::testing::Test {
 TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
   std::atomic<bool> serverStarted{false};
   std::atomic<bool> stopServer{false};
-  const uint32_t kDataserverNum = 30; 
+  const uint32_t kDataserverNum = 30;
   const uint32_t kHBNumPerServer = 8;
   std::string ip_addr_prefix{"192.168.0."};
   int32_t server_port = 40000;
@@ -85,7 +83,7 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
   // (1) Test ClusterManagerHBMonitor::OnRecvNodeHeartbeat() interface
   // ------------------------------------------------------------------------
   MLOG_INFO("Case to test Test ClusterManagerHBMonitor::OnRecvNodeHeartbeat()");
-  folly::CPUThreadPoolExecutor executor1(kDataserverNum+2);
+  folly::CPUThreadPoolExecutor executor1(kDataserverNum + 2);
   // light-weight cv
   // post()  - signaled state
   // reset() - set to unsignaled state again
@@ -96,14 +94,15 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
 
   uint32_t old_flag_val_1 = FLAGS_cm_cluster_init_grace_period_inSecs;
   uint32_t old_flag_val_2 = FLAGS_cm_heartbeat_records_perserver;
-  FLAGS_cm_cluster_init_grace_period_inSecs = 5; // shorten grace period in cm service start
+  FLAGS_cm_cluster_init_grace_period_inSecs = 5;  // shorten grace period in cm service start
   FLAGS_cm_heartbeat_records_perserver = 3;
 
   auto server_thread = [&]() {
     // start RPC service and wait for requests
     simm::common::ModuleServiceState::GetInstance().Reset(FLAGS_cm_cluster_init_grace_period_inSecs);
     MLOG_INFO("Mark cm into grace period, duration is {} seconds", FLAGS_cm_cluster_init_grace_period_inSecs);
-    simm::cm::ClusterManagerService cm_service(cm_shard_manager_ptr_, this->cm_node_manager_ptr_, this->cm_hb_monitor_ptr_);
+    simm::cm::ClusterManagerService cm_service(
+        cm_shard_manager_ptr_, this->cm_node_manager_ptr_, this->cm_hb_monitor_ptr_);
     error_code_t ret = cm_service.Init();
     EXPECT_EQ(ret, CommonErr::OK);
     ret = cm_service.Start();
@@ -128,7 +127,7 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
     MLOG_INFO("Server thread exit!");
   };
 
-  auto client_thread = [&](folly::CPUThreadPoolExecutor & executor) {
+  auto client_thread = [&](folly::CPUThreadPoolExecutor &executor) {
     // wait for server enters into grace period state
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
@@ -140,12 +139,12 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
       std::string server_addr_str = ip_addr_prefix + std::to_string(thread_num);
 
       // create sirpc object as rpc client
-      sicl::rpc::SiRPC* sirpc_client;
+      sicl::rpc::SiRPC *sirpc_client;
       sicl::rpc::SiRPC::newInstance(sirpc_client, false);
-      sicl::rpc::RpcContext* ctx_p = nullptr;
+      sicl::rpc::RpcContext *ctx_p = nullptr;
       sicl::rpc::RpcContext::newInstance(ctx_p);
       std::shared_ptr<sicl::rpc::RpcContext> ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
-      //FIXME(ytji): URGENT! - 100 servers under 1s timeout will make rpc timeout issue occasionally
+      // FIXME(ytji): URGENT! - 100 servers under 1s timeout will make rpc timeout issue occasionally
       ctx->set_timeout(sicl::transport::TimerTick::TIMER_3S);
 
       // send handshake rpc to cm to join into the cluster
@@ -154,10 +153,9 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
       auto _field = hs_req.mutable_node();
       _field->set_ip(server_addr_str);
       _field->set_port(server_port);
-      auto hs_done_cb_ok = [&](const google::protobuf::Message* rsp,
-                               const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+      auto hs_done_cb_ok = [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
         EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
-        auto response = dynamic_cast<const NewNodeHandShakeResponsePB*>(rsp);
+        auto response = dynamic_cast<const NewNodeHandShakeResponsePB *>(rsp);
         EXPECT_EQ(response->ret_code(), CommonErr::OK);
         // clean up response object
         delete hs_resp;
@@ -182,10 +180,10 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
         auto node_field = hb_req.mutable_node();
         node_field->set_ip(server_addr_str);
         node_field->set_port(server_port);
-        auto hb_done_cb_ok = [&](const google::protobuf::Message* rsp,
-                                        const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+        auto hb_done_cb_ok = [&](const google::protobuf::Message *rsp,
+                                 const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
           EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
-          auto response = dynamic_cast<const DataServerHeartBeatResponsePB*>(rsp);
+          auto response = dynamic_cast<const DataServerHeartBeatResponsePB *>(rsp);
           EXPECT_EQ(response->ret_code(), CommonErr::OK);
           // clean up response object
           delete hb_resp;
@@ -210,7 +208,7 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
           }
         } else if (ctype == caseType::bgHBScanLoop) {
           MLOG_INFO("Enter into caseType::bgHBScanLoop");
-          if ((thread_num == 0 || thread_num == 2 || thread_num == 4 || thread_num == 6 || thread_num == 8) && 
+          if ((thread_num == 0 || thread_num == 2 || thread_num == 4 || thread_num == 6 || thread_num == 8) &&
               (n == 4 || n == 5 || n == 6 || n == 7)) {
             // mock some hb requests missing
           } else {
@@ -231,9 +229,7 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
     };
 
     for (uint32_t i = 0; i < kDataserverNum; ++i) {
-      executor.add([i, &client_sub_thread]() {
-        client_sub_thread(i);
-      });
+      executor.add([i, &client_sub_thread]() { client_sub_thread(i); });
       MLOG_INFO("client_sub_thread-{} added!", i);
     }
 
@@ -263,20 +259,20 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
   {
     auto locked_map = cm_hb_monitor_ptr_->ds_hb_records_.rlock();
     for (uint32_t i = 0; i < kDataserverNum; ++i) {
-        // FIXME(ytji) : change the port hard code with flag value later
-        std::string server_addr = ip_addr_prefix + std::to_string(i) + ":" + std::to_string(server_port);
-        EXPECT_EQ(locked_map->at(server_addr).size(), FLAGS_cm_heartbeat_records_perserver);
-        auto it = locked_map->at(server_addr).begin();
-        auto it_nxt = it + 1;
-        if (it_nxt != locked_map->at(server_addr).end()) {
-          if (i == 3 || i == 5) {
-            // FIXME(ytji): how to check ts?
-            //EXPECT_EQ(it_nxt->monotonic_tp_ - it->monotonic_tp_, std::chrono::seconds(2));
-          } else {
-            // FIXME(ytji): how to check ts?
-            //EXPECT_EQ(it_nxt->monotonic_tp_ - it->monotonic_tp_, std::chrono::seconds(1));
-          }
+      // FIXME(ytji) : change the port hard code with flag value later
+      std::string server_addr = ip_addr_prefix + std::to_string(i) + ":" + std::to_string(server_port);
+      EXPECT_EQ(locked_map->at(server_addr).size(), FLAGS_cm_heartbeat_records_perserver);
+      auto it = locked_map->at(server_addr).begin();
+      auto it_nxt = it + 1;
+      if (it_nxt != locked_map->at(server_addr).end()) {
+        if (i == 3 || i == 5) {
+          // FIXME(ytji): how to check ts?
+          // EXPECT_EQ(it_nxt->monotonic_tp_ - it->monotonic_tp_, std::chrono::seconds(2));
+        } else {
+          // FIXME(ytji): how to check ts?
+          // EXPECT_EQ(it_nxt->monotonic_tp_ - it->monotonic_tp_, std::chrono::seconds(1));
         }
+      }
     }
   }
 
@@ -295,7 +291,7 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
   serverStarted.store(false);
   stopServer.store(false);
 
-  folly::CPUThreadPoolExecutor executor2(kDataserverNum+2);
+  folly::CPUThreadPoolExecutor executor2(kDataserverNum + 2);
   serverDone.reset();
   // mock 5 servers 4 HB requests respectively
   // server-1 : req1, req2, req3, req4; req5 ~ req8 missed
@@ -308,9 +304,9 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
 
   uint32_t old_flag_val_3 = FLAGS_cm_heartbeat_timeout_inSecs;
   uint32_t old_flag_val_4 = FLAGS_cm_heartbeat_bg_scan_interval_inSecs;
-  FLAGS_cm_heartbeat_records_perserver = 5; // max 5 HB record per dataserver
-  FLAGS_cm_heartbeat_timeout_inSecs = 2; // 2 secs timeout
-  FLAGS_cm_heartbeat_bg_scan_interval_inSecs = 1; // 1s bg scan interval
+  FLAGS_cm_heartbeat_records_perserver = 5;        // max 5 HB record per dataserver
+  FLAGS_cm_heartbeat_timeout_inSecs = 2;           // 2 secs timeout
+  FLAGS_cm_heartbeat_bg_scan_interval_inSecs = 1;  // 1s bg scan interval
 
   // mark hb monitor statis is runing
   cm_hb_monitor_ptr_->stop_flag_.store(false);
@@ -332,25 +328,25 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
     // size() is approximate and may not reflect concurrent updates or recent clear() operations.
     EXPECT_EQ(locked_map->size(), kDataserverNum);
     for (uint32_t i = 0; i < kDataserverNum; ++i) {
-        // FIXME(ytji) : change the port hard code with flag value later
-        std::string server_addr = ip_addr_prefix + std::to_string(i) + ":" + std::to_string(server_port);
-        auto it = locked_map->find(server_addr);
-        EXPECT_TRUE(it != locked_map->end());
+      // FIXME(ytji) : change the port hard code with flag value later
+      std::string server_addr = ip_addr_prefix + std::to_string(i) + ":" + std::to_string(server_port);
+      auto it = locked_map->find(server_addr);
+      EXPECT_TRUE(it != locked_map->end());
+      if (i == 0 || i == 2 || i == 4 || i == 6 || i == 8) {
+        EXPECT_EQ(it->second.size(), 4);
+      } else {
+        EXPECT_EQ(it->second.size(), FLAGS_cm_heartbeat_records_perserver);
+      }
+      auto it_nm = cm_node_manager_ptr_->node_status_map_.find(server_addr);
+      // EXPECT_TRUE(it_nm != cm_node_manager_ptr_->node_status_map_.end());
+      if (it_nm != cm_node_manager_ptr_->node_status_map_.end()) {
         if (i == 0 || i == 2 || i == 4 || i == 6 || i == 8) {
-          EXPECT_EQ(it->second.size(), 4);
+          EXPECT_EQ(it_nm->second, NodeStatus::DEAD);
         } else {
-          EXPECT_EQ(it->second.size(), FLAGS_cm_heartbeat_records_perserver);
+          // FIXME(ytji): all dataservers are marked as DEAD
+          // EXPECT_EQ(it_nm->second, NodeStatus::RUNNING);
         }
-        auto it_nm = cm_node_manager_ptr_->node_status_map_.find(server_addr);
-        //EXPECT_TRUE(it_nm != cm_node_manager_ptr_->node_status_map_.end());
-        if (it_nm != cm_node_manager_ptr_->node_status_map_.end()) {
-          if (i == 0 || i == 2 || i == 4 || i == 6 || i == 8) {
-            EXPECT_EQ(it_nm->second, NodeStatus::DEAD);
-          } else {
-            // FIXME(ytji): all dataservers are marked as DEAD
-            //EXPECT_EQ(it_nm->second, NodeStatus::RUNNING);
-          }
-        }
+      }
     }
   }
 
@@ -361,12 +357,35 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
   FLAGS_cm_heartbeat_bg_scan_interval_inSecs = old_flag_val_4;
 }
 
+TEST_F(ClusterManagerHBMonitorTest, TestRestartAfterStopResumesHeartbeatScanning) {
+  auto old_timeout = FLAGS_cm_heartbeat_timeout_inSecs;
+  auto old_scan_interval = FLAGS_cm_heartbeat_bg_scan_interval_inSecs;
+  auto restore_flags = folly::makeGuard([&]() {
+    FLAGS_cm_heartbeat_timeout_inSecs = old_timeout;
+    FLAGS_cm_heartbeat_bg_scan_interval_inSecs = old_scan_interval;
+  });
+  FLAGS_cm_heartbeat_timeout_inSecs = 1;
+  FLAGS_cm_heartbeat_bg_scan_interval_inSecs = 1;
+
+  const std::string node_addr = "127.0.0.1:47001";
+  ASSERT_EQ(cm_node_manager_ptr_->AddNode(node_addr), CommonErr::OK);
+  ASSERT_EQ(cm_hb_monitor_ptr_->Start(), CommonErr::OK);
+  ASSERT_EQ(cm_hb_monitor_ptr_->OnRecvNodeHeartbeat(node_addr), CommonErr::OK);
+  ASSERT_EQ(cm_hb_monitor_ptr_->Stop(), CommonErr::OK);
+  EXPECT_EQ(cm_node_manager_ptr_->QueryNodeStatus(node_addr), NodeStatus::RUNNING);
+
+  ASSERT_EQ(cm_hb_monitor_ptr_->Start(), CommonErr::OK);
+  std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+  EXPECT_EQ(cm_node_manager_ptr_->QueryNodeStatus(node_addr), NodeStatus::DEAD);
+  EXPECT_EQ(cm_hb_monitor_ptr_->Stop(), CommonErr::OK);
+}
+
 }  // namespace cm
 }  // namespace simm
 
 // should use main function in below way to accept gflag options changes
 // from UT test binary command line
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();

@@ -1,14 +1,14 @@
+#include <unistd.h>
 #include <chrono>
+#include <concepts>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
-#include <chrono>
-#include <concepts>
-#include <unistd.h>
-#include <cstring>
+#include <unordered_set>
 
 #include <gflags/gflags.h>
 
@@ -18,19 +18,17 @@
 #include "proto/cm_clnt_rpcs.pb.h"
 #include "proto/ds_clnt_rpcs.pb.h"
 
+#include "clnt_messenger.h"
+#include "cluster_manager/cm_rpc_handler.h"
 #include "common/base/assert.h"
+#include "common/context/context.h"
 #include "common/errcode/errcode_def.h"
 #include "common/hashkit/hashkit.h"
 #include "common/logging/logging.h"
-#include "common/utils/k8s_util.h"
-#include "common/context/context.h"
 #include "common/trace/trace.h"
-#include "cluster_manager/cm_rpc_handler.h"
+#include "common/utils/k8s_util.h"
 #include "data_server/kv_rpc_handler.h"
-#include "clnt_messenger.h"
 
-DECLARE_uint32(shard_total_num);
-DECLARE_uint32(clnt_thread_pool_size);
 DECLARE_string(cm_namespace);
 DECLARE_string(cm_svc_name);
 DECLARE_string(cm_port_name);
@@ -38,13 +36,18 @@ DECLARE_string(cm_primary_node_ip);
 DECLARE_int32(cm_rpc_inter_port);
 DECLARE_int32(clnt_sync_req_timeout_ms);
 DECLARE_int32(clnt_async_req_timeout_ms);
+DECLARE_uint32(shard_total_num);
+DECLARE_uint32(clnt_thread_pool_size);
 DECLARE_uint32(clnt_cm_addr_check_interval_inSecs);
+DECLARE_uint32(clnt_syncreq_retry_count);
 DECLARE_bool(simm_enable_trace);
 
 DECLARE_LOG_MODULE("simm_client");
 
 template <typename RequestPB>
-concept HasPBKey = requires(RequestPB pb) { { pb.key() }; };
+concept HasPBKey = requires(RequestPB pb) {
+  {pb.key()};
+};
 
 namespace simm {
 namespace clnt {
@@ -56,7 +59,7 @@ ClientMessenger::ClientMessenger()
   shard_table_.reserve(shard_num_);
   hashkit_ = &simm::hashkit::HashkitBase::Instance();
   // create rpc client and rdma mempool
-  sicl::rpc::SiRPC::newInstance(rpc_client_, false/*is_server*/);
+  sicl::rpc::SiRPC::newInstance(rpc_client_, false /*is_server*/);
   // set client request timeout
   sync_req_timeout_ms_ = convert_timeout_setting_to_timer_tick(FLAGS_clnt_sync_req_timeout_ms);
   async_req_timeout_ms_ = convert_timeout_setting_to_timer_tick(FLAGS_clnt_async_req_timeout_ms);
@@ -94,19 +97,17 @@ error_code_t ClientMessenger::ReInit() {
     return CommonErr::InvalidState;
   }
 
-  auto [ret, servers] = update_all_route_table(cm_addr_);
+  auto [ret, routing] = update_all_route_table(cm_addr_);
   if (ret != CommonErr::OK) {
     MLOG_ERROR("Update routing table from cluster manager failed : {}", ret);
     cm_addr_ = "";
     return CommonErr::InvalidState;
   }
-
-  // build connections with all data servers
-  for (const auto &server_addr : servers) {
-    ret = build_connection(server_addr);
-    if (ret != CommonErr::OK) {
-      MLOG_ERROR("Build connection with {} failed, error: {}", server_addr, ret);
-    }
+  ret = ApplyRouteTableDiff(*routing);
+  if (ret != CommonErr::OK) {
+    MLOG_ERROR("Apply routing table diff failed : {}", ret);
+    cm_addr_ = "";
+    return CommonErr::InvalidState;
   }
 
 #ifdef SIMM_ENABLE_TRACE
@@ -131,7 +132,7 @@ error_code_t ClientMessenger::Init() {
           std::unique_lock lock(failover_mutex_);
           // NOTE: We might miss messages if the conditon variable is notified while we rebuild connections.
           // So check on regular intervals to workaround that.
-          failover_condv_.wait_for(lock, std::chrono::seconds(10));
+          failover_condv_.wait_for(lock, std::chrono::seconds(FLAGS_clnt_cm_addr_check_interval_inSecs));
         }
         if (!failover_flag_.load()) {
           // avoid one meaningless cm address query below, for curl_easy_perform() in get_cm_address()
@@ -169,6 +170,11 @@ error_code_t ClientMessenger::Init() {
 }
 
 std::string ClientMessenger::get_cm_address() {
+#if defined(SIMM_UNIT_TEST)
+  if (test_get_cm_address_hook_) {
+    return test_get_cm_address_hook_();
+  }
+#endif
   const std::string default_cm_addr = FLAGS_cm_primary_node_ip + ":" + std::to_string(FLAGS_cm_rpc_inter_port);
   // get cluster manager pod info from K8S api, get vector of [pod_name, pod_ip]
   // TODO: change to get cluster manager info from etcd
@@ -188,6 +194,11 @@ std::string ClientMessenger::get_cm_address() {
 }
 
 error_code_t ClientMessenger::build_connection(const std::string &addr) {
+#if defined(SIMM_UNIT_TEST)
+  if (test_build_connection_hook_) {
+    return test_build_connection_hook_(addr);
+  }
+#endif
   auto node_addr = simm::common::NodeAddress::ParseFromString(addr);
   if (!node_addr) {
     MLOG_ERROR("Invalid server address format: {}", addr);
@@ -198,14 +209,60 @@ error_code_t ClientMessenger::build_connection(const std::string &addr) {
     MLOG_ERROR("Build connection with {} failed", addr);
     return ClntErr::BuildConnectionFailed;
   }
+  auto ds_ctx = GetOrCreateConnectionContext(addr);
+  ds_ctx->StoreConnection(connection);
+  ds_ctx->gen_num.fetch_add(1);
+  ds_ctx->active.store(true);
+  return CommonErr::OK;
+}
+
+void ClientMessenger::ReleaseConnectionContext(const std::shared_ptr<ConnectionContext> &ds_ctx) {
+  if (ds_ctx == nullptr) {
+    return;
+  }
+  ds_ctx->active.store(false);
+  ds_ctx->gen_num.fetch_add(1);
+  ds_ctx->StoreConnection(nullptr);
+}
+
+std::shared_ptr<ClientMessenger::ConnectionContext> ClientMessenger::GetOrCreateConnectionContext(
+    const std::string &addr) {
   auto ds_ctx = std::make_shared<ConnectionContext>(addr);
   if (auto [existing, inserted] = ds_conn_ctxs_.emplace(addr, ds_ctx); !inserted) {
     ds_ctx = existing->second;
   }
-  ds_ctx->connection = connection;
-  ds_ctx->gen_num.fetch_add(1);
-  ds_ctx->active.store(true);
-  return CommonErr::OK;
+  return ds_ctx;
+}
+
+void ClientMessenger::PruneStaleConnectionContexts(const std::unordered_set<std::string> &live_servers) {
+  std::vector<std::string> stale_servers;
+  for (const auto &[addr, ds_ctx] : ds_conn_ctxs_) {
+    if (!live_servers.contains(addr)) {
+      stale_servers.push_back(addr);
+    }
+  }
+
+  if (stale_servers.empty()) {
+    return;
+  }
+
+  std::vector<uint16_t> stale_shards;
+  for (const auto &[shard_id, ds_ctx] : shard_table_) {
+    if (ds_ctx != nullptr && !live_servers.contains(ds_ctx->ip_port)) {
+      stale_shards.push_back(shard_id);
+    }
+  }
+  for (auto shard_id : stale_shards) {
+    shard_table_.erase(shard_id);
+  }
+
+  for (const auto &addr : stale_servers) {
+    auto it = ds_conn_ctxs_.find(addr);
+    if (it != ds_conn_ctxs_.end()) {
+      ReleaseConnectionContext(it->second);
+      ds_conn_ctxs_.erase(addr);
+    }
+  }
 }
 
 template <typename RequestType, typename ResponseType>
@@ -221,42 +278,48 @@ error_code_t ClientMessenger::call_sync(uint16_t shard_id,
 
   auto rpc_ctx = ctx->get_rpc_ctx();
   auto retry_delay = std::chrono::milliseconds(100);
-  auto retry_count = 3;
-  for (auto i = 0; i <= retry_count; ++i) {
+  for (auto i = 0; i <= FLAGS_clnt_syncreq_retry_count; ++i) {
     auto ds_ctx = shard_table_[shard_id];
     if (ds_ctx->active.load()) {
       auto tag = ds_ctx->gen_num.load();
+      auto connection = ds_ctx->LoadConnection();
+      if (connection == nullptr) {
+        MLOG_ERROR("Transport connection is null for shard id {}, data server is {}", shard_id, ds_ctx->ip_port);
+        ReconnectByErrors(rpc_ctx, ds_ctx, shard_id, tag);
+      } else {
 #ifdef SIMM_APIPERF
-      auto t1 = std::chrono::steady_clock::now();
+        auto t1 = std::chrono::steady_clock::now();
 #endif
-      SIMM_TRACE_POINT(*ctx, simm::trace::TracePointType::CLIENT_CALLSYNC_BEFORE_RPC);
+        SIMM_TRACE_POINT(*ctx, simm::trace::TracePointType::CLIENT_CALLSYNC_BEFORE_RPC);
 
-      rpc_client_->SendRequest(ds_ctx->connection, req_type, req, resp.get(), rpc_ctx);
+        rpc_client_->SendRequest(connection, req_type, req, resp.get(), rpc_ctx);
 
-      SIMM_TRACE_POINT(*ctx, simm::trace::TracePointType::CLIENT_CALLSYNC_AFTER_RPC);
+        SIMM_TRACE_POINT(*ctx, simm::trace::TracePointType::CLIENT_CALLSYNC_AFTER_RPC);
 #ifdef SIMM_APIPERF
-      auto t2 = std::chrono::steady_clock::now();
-      if constexpr (HasPBKey<RequestType>) {
-        MLOG_INFO("Perf-callsync-sendreq key:{} Lat:{} us", req.key(), 
-              std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());;
-      }
+        auto t2 = std::chrono::steady_clock::now();
+        if constexpr (HasPBKey<RequestType>) {
+          MLOG_INFO("Perf-callsync-sendreq key:{} Lat:{} us",
+                    req.key(),
+                    std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
+        }
 #endif
-      if (!rpc_ctx->Failed()) {
-        MLOG_DEBUG("call_sync rpc succeed");
-        return CommonErr::OK;
+        if (!rpc_ctx->Failed()) {
+          MLOG_DEBUG("call_sync rpc succeed");
+          return CommonErr::OK;
+        }
+        ReconnectByErrors(rpc_ctx, ds_ctx, shard_id, tag);
       }
-      ReconnectByErrors(rpc_ctx, ds_ctx, shard_id, tag);
     } else {
       MLOG_WARN("Transport connection is inactive for shard id {}, data server is {}", shard_id, ds_ctx->ip_port);
     }
 
-    if (i < retry_count) {
+    if (i < FLAGS_clnt_syncreq_retry_count) {
       std::this_thread::sleep_for(retry_delay);
       retry_delay *= 2;
     }
   }
 
-  MLOG_ERROR("Failed to send request after {} retries (sync call)", retry_count);
+  MLOG_ERROR("Failed to send request after {} retries (sync call)", FLAGS_clnt_syncreq_retry_count);
   return ClntErr::ClntSendRPCFailed;
 }
 
@@ -283,12 +346,7 @@ error_code_t ClientMessenger::execute(const std::string &addr,
                                       std::shared_ptr<ResponseType> resp,
                                       std::shared_ptr<simm::common::SimmContext> ctx,
                                       Callback callback) {
-  auto ds_ctx = std::make_shared<ConnectionContext>(addr);
-  // If oe data server was not connected yet or failed to connect in init process, it will be added
-  // into client connection contexts.
-  if (auto [existing, inserted] = ds_conn_ctxs_.emplace(addr, ds_ctx); !inserted) {
-    ds_ctx = existing->second;
-  }
+  auto ds_ctx = GetOrCreateConnectionContext(addr);
   if (!ds_ctx->active.load()) {
     // If one data server is new added and can't be connected, background failover thread will try
     // reconnect action by reinit
@@ -299,22 +357,28 @@ error_code_t ClientMessenger::execute(const std::string &addr,
     }
     MLOG_DEBUG("Connect with {} succeed", addr);
   }
-  auto connection = ds_ctx->connection;
+  auto connection = ds_ctx->LoadConnection();
+  if (connection == nullptr) {
+    MLOG_ERROR("Connection with {} is null", addr);
+    return ClntErr::BuildConnectionFailed;
+  }
 
   auto rpc_ctx = ctx->get_rpc_ctx();
 
   if (callback) {
-    #ifdef SIMM_APIPERF
+#ifdef SIMM_APIPERF
     auto t1 = std::chrono::steady_clock::now();
-    #endif
+#endif
     rpc_client_->SendRequest(connection, req_type, req, resp.get(), rpc_ctx, std::move(callback));
-    #ifdef SIMM_APIPERF
+#ifdef SIMM_APIPERF
     auto t2 = std::chrono::steady_clock::now();
     if constexpr (HasPBKey<RequestType>) {
-     MLOG_INFO("Perf-exec-sendreq key:{} Lat:{} us", req.key(), 
-          std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());;
+      MLOG_INFO("Perf-exec-sendreq key:{} Lat:{} us",
+                req.key(),
+                std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
+      ;
     }
-    #endif
+#endif
     MLOG_DEBUG("Call async rpc succeed");
   } else {
     MLOG_DEBUG("Call sync rpc to {}", addr);
@@ -328,75 +392,105 @@ error_code_t ClientMessenger::execute(const std::string &addr,
   return CommonErr::OK;
 }
 
-std::pair<error_code_t, std::vector<std::string>> ClientMessenger::update_all_route_table(const std::string &ip_port) {
+std::pair<error_code_t, std::shared_ptr<QueryShardRoutingTableAllResponsePB>> ClientMessenger::update_all_route_table(
+    const std::string &ip_port) {
   auto addr = simm::common::NodeAddress::ParseFromString(ip_port);
   if (!addr) {
     MLOG_ERROR("Invalid ip_port string when update all route table: {}", ip_port);
-    return {ClntErr::GetRoutingTableFailed, {}};
+    return {ClntErr::GetRoutingTableFailed, nullptr};
   }
+
+#if defined(SIMM_UNIT_TEST)
+  if (test_route_query_hook_) {
+    auto [ret, resp] = test_route_query_hook_(ip_port);
+    if (ret != CommonErr::OK || resp == nullptr) {
+      return {ret, nullptr};
+    }
+    if (resp->ret_code() != 0) {
+      return {ClntErr::GetRoutingTableFailed, nullptr};
+    }
+    return {CommonErr::OK, resp};
+  }
+#endif
 
   // Query shard routing table from Cluster Manager
   QueryShardRoutingTableAllRequestPB req;
-  auto resp = std::make_shared<QueryShardRoutingTableAllResponsePB>();
 
   // NOTE: The cluster maanager may return an empty list for unknown reasons.
   // Retry if that happens.
   auto query_retry_delay = std::chrono::milliseconds(100);
   auto query_retry_count = 3;
   for (auto i = 0; i <= query_retry_count; ++i) {
+    auto connection = rpc_client_->connect(addr->node_ip_, addr->node_port_);
+    if (connection == nullptr) {
+      MLOG_ERROR("Build connection with cluster manager {} failed", ip_port);
+      return {ClntErr::BuildConnectionFailed, nullptr};
+    }
+
+    auto resp = std::make_shared<QueryShardRoutingTableAllResponsePB>();
     auto ctx = std::make_shared<simm::common::SimmContext>();
     sicl::rpc::RpcContext *ctx_p;
     sicl::rpc::RpcContext::newInstance(ctx_p);
     auto rpc_ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
     ctx->set_rpc_ctx(rpc_ctx);
     rpc_ctx->set_timeout(sync_req_timeout_ms_);
-    auto ret = execute<QueryShardRoutingTableAllRequestPB, QueryShardRoutingTableAllResponsePB>(
-        ip_port,
-        static_cast<sicl::rpc::ReqType>(cm::ClusterManagerRpcType::RPC_ROUTING_TABLE_QUERY_ALL),
-        req,
-        resp,
-        ctx,
-        nullptr);
-    if (ret != CommonErr::OK) {
-      MLOG_ERROR("RPC to cluster manager({}) failed: {}", ip_port, ret);
-      return {ret, {}};
+    rpc_client_->SendRequest(connection,
+                             static_cast<sicl::rpc::ReqType>(cm::ClusterManagerRpcType::RPC_ROUTING_TABLE_QUERY_ALL),
+                             req,
+                             resp.get(),
+                             rpc_ctx);
+    if (rpc_ctx->Failed()) {
+      MLOG_ERROR("RPC to cluster manager({}) failed: {}({})", ip_port, rpc_ctx->ErrorCode(), rpc_ctx->ErrorText());
+      return {ClntErr::ClntSendRPCFailed, nullptr};
     } else if (resp->ret_code() != 0) {
       MLOG_ERROR("Cluster manager({}) respond with error: {}", ip_port, resp->ret_code());
-      return {ClntErr::GetRoutingTableFailed, {}};
+      return {ClntErr::GetRoutingTableFailed, nullptr};
     }
     if (resp->shard_info().size() != 0) {
-      break;
+      MLOG_INFO("QueryShardRoutingTableAll from Cluster manager({}) succeed, total shards num: {}",
+                ip_port,
+                resp->shard_info().size());
+      return {CommonErr::OK, resp};
     }
     if (i == query_retry_count) {
       MLOG_ERROR(
           "QueryShardRoutingTableAll from Cluster manager({}) failed after {} retries", ip_port, query_retry_count);
-      return {ClntErr::GetRoutingTableTimeout, {}};
+      return {ClntErr::GetRoutingTableTimeout, nullptr};
     } else {
       std::this_thread::sleep_for(query_retry_delay);
       query_retry_delay *= 2;
     }
   }
-  MLOG_INFO("QueryShardRoutingTableAll from Cluster manager({}) succeed, total shards num: {}",
-            ip_port,
-            resp->shard_info().size());
+  return {ClntErr::GetRoutingTableTimeout, nullptr};
+}
 
-  std::vector<std::string> servers;
-  auto route_entries = resp->shard_info();
-  for (auto entry : route_entries) {
+error_code_t ClientMessenger::ApplyRouteTableDiff(const QueryShardRoutingTableAllResponsePB &routing) {
+  std::unordered_set<std::string> live_servers;
+  std::vector<std::string> servers_to_connect;
+
+  shard_table_.clear();
+  for (const auto &entry : routing.shard_info()) {
     std::string ip = entry.data_server_address().ip();
     uint16_t port = static_cast<uint16_t>(entry.data_server_address().port());
     const auto address = ip + ":" + std::to_string(port);
-    servers.push_back(address);
-    auto ds_ctx = std::make_shared<ConnectionContext>(address);
-    if (auto [existing, inserted] = ds_conn_ctxs_.emplace(address, ds_ctx); !inserted) {
-      ds_ctx = existing->second;
+    auto ds_ctx = GetOrCreateConnectionContext(address);
+    if (live_servers.insert(address).second && (!ds_ctx->active.load() || ds_ctx->LoadConnection() == nullptr)) {
+      servers_to_connect.push_back(address);
     }
     for (auto shard_id : entry.shard_ids()) {
       shard_table_.insert_or_assign(shard_id, ds_ctx);
     }
   }
+  PruneStaleConnectionContexts(live_servers);
 
-  return {CommonErr::OK, servers};
+  for (const auto &addr : servers_to_connect) {
+    auto ret = build_connection(addr);
+    if (ret != CommonErr::OK) {
+      MLOG_ERROR("Build connection with {} failed during route diff apply, error: {}", addr, ret);
+    }
+  }
+
+  return CommonErr::OK;
 }
 
 void ClientMessenger::ReconnectByErrors(std::shared_ptr<sicl::rpc::RpcContext> rpc_ctx,
@@ -428,7 +522,16 @@ void ClientMessenger::ReconnectByErrors(std::shared_ptr<sicl::rpc::RpcContext> r
   }
 }
 
-error_code_t ClientMessenger::Put(const std::string &key, std::shared_ptr<simm::common::MemBlock> memp, std::shared_ptr<simm::common::SimmContext> ctx) {
+void ClientMessenger::HandleAsyncRequestFailure(std::shared_ptr<sicl::rpc::RpcContext> rpc_ctx,
+                                                std::shared_ptr<ConnectionContext> request_ds_ctx,
+                                                uint16_t shard_id,
+                                                size_t old_conn_gen_num) {
+  ReconnectByErrors(std::move(rpc_ctx), std::move(request_ds_ctx), shard_id, old_conn_gen_num);
+}
+
+error_code_t ClientMessenger::Put(const std::string &key,
+                                  std::shared_ptr<simm::common::MemBlock> memp,
+                                  std::shared_ptr<simm::common::SimmContext> ctx) {
   uint16_t shard_id = hashkit_->generate_16bit_hash_value(key.c_str(), key.length()) % shard_num_;
 
   // memblock must have descr ptr
@@ -463,12 +566,12 @@ error_code_t ClientMessenger::Put(const std::string &key, std::shared_ptr<simm::
   auto ret = call_sync<KVPutRequestPB, KVPutResponsePB>(
       shard_id, static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_PUT), req, resp, ctx);
   if (ret != CommonErr::OK) {
-    MLOG_ERROR("Put object {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
+    MLOG_ERROR("Put key {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
     return ret;
   } else {
     MLOG_DEBUG("{}: key({}) ret_code({})", resp->GetTypeName(), key, resp->ret_code());
     if (resp->ret_code() != 0) {
-      MLOG_ERROR("KVPut {} failed: {}", key, resp->ret_code());
+      MLOG_ERROR("KVPut key {} failed: {}", key, resp->ret_code());
 
       // FIXME(szzhao): remove workaround after it's implemented in data server
       if (resp->ret_code() == DsErr::DataAlreadyExists) {
@@ -485,7 +588,7 @@ error_code_t ClientMessenger::Put(const std::string &key, std::shared_ptr<simm::
 
 error_code_t ClientMessenger::AsyncPut(const std::string &key,
                                        std::shared_ptr<simm::common::MemBlock> memp,
-                                       std::function<void(int)> callback, 
+                                       std::function<void(int)> callback,
                                        std::shared_ptr<simm::common::SimmContext> ctx) {
   uint16_t shard_id = hashkit_->generate_16bit_hash_value(key.c_str(), key.length()) % shard_num_;
 
@@ -516,25 +619,25 @@ error_code_t ClientMessenger::AsyncPut(const std::string &key,
   auto resp = std::make_shared<KVPutResponsePB>();
   auto ds_ctx_before_req = shard_table_.at(shard_id);
   auto gen_num_before_req = ds_ctx_before_req->gen_num.load();
-  auto done = [this, resp, key, gen_num_before_req, shard_id, cb = std::move(callback)](
+  auto done = [this, resp, key, ds_ctx_before_req, gen_num_before_req, shard_id, cb = std::move(callback)](
                   const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> rpc_ctx) {
     if (rpc_ctx->Failed()) {
-      MLOG_ERROR("Async put kv {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
-      ReconnectByErrors(rpc_ctx, this->shard_table_.at(shard_id), shard_id, gen_num_before_req);
+      MLOG_ERROR("Async put key {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
+      HandleAsyncRequestFailure(rpc_ctx, ds_ctx_before_req, shard_id, gen_num_before_req);
       cb(rpc_ctx->ErrorCode());
     } else {
       auto new_resp = static_cast<const KVPutResponsePB *>(rsp);
       MLOG_DEBUG("{}: key({}) ret_code({})", new_resp->GetTypeName(), key, new_resp->ret_code());
       if (new_resp->ret_code() != 0) {
-        MLOG_ERROR("AsyncKVPut {} failed: {}", key, new_resp->ret_code());
+        MLOG_ERROR("AsyncKVPut key {} failed: {}", key, new_resp->ret_code());
       }
       cb(new_resp->ret_code());
     }
   };
 
-  #ifdef SIMM_APIPERF
-    auto t1 = std::chrono::steady_clock::now();
-  #endif
+#ifdef SIMM_APIPERF
+  auto t1 = std::chrono::steady_clock::now();
+#endif
   call_async<KVPutRequestPB, KVPutResponsePB>(
       shard_id,
       static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_PUT),
@@ -542,16 +645,19 @@ error_code_t ClientMessenger::AsyncPut(const std::string &key,
       resp,
       ctx,
       std::move(done));
-  #ifdef SIMM_APIPERF
-    auto t2 = std::chrono::steady_clock::now();
-    MLOG_INFO("Perf-aput-callasync key:{} Lat:{} us", key, 
-          std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
-  #endif
+#ifdef SIMM_APIPERF
+  auto t2 = std::chrono::steady_clock::now();
+  MLOG_INFO("Perf-aput-callasync key:{} Lat:{} us",
+            key,
+            std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
+#endif
 
   return CommonErr::OK;
 }
 
-int32_t ClientMessenger::Get(const std::string &key, std::shared_ptr<simm::common::MemBlock> memp, std::shared_ptr<simm::common::SimmContext> ctx) {
+int32_t ClientMessenger::Get(const std::string &key,
+                             std::shared_ptr<simm::common::MemBlock> memp,
+                             std::shared_ptr<simm::common::SimmContext> ctx) {
   uint16_t shard_id = hashkit_->generate_16bit_hash_value(key.c_str(), key.length()) % shard_num_;
 
   sicl::transport::MemDesc *mem_desc;
@@ -585,16 +691,17 @@ int32_t ClientMessenger::Get(const std::string &key, std::shared_ptr<simm::commo
       shard_id, static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_GET), req, resp, ctx);
 #ifdef SIMM_APIPERF
   auto t2 = std::chrono::steady_clock::now();
-  MLOG_INFO("Perf-get-callsync key:{} Lat:{} us", key, 
-        std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
+  MLOG_INFO("Perf-get-callsync key:{} Lat:{} us",
+            key,
+            std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
 #endif
   if (ret != CommonErr::OK) {
-    MLOG_ERROR("Get kv {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
+    MLOG_ERROR("Get key {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
     return ret;
   } else {
     MLOG_DEBUG("{}: key({}) ret_code({}) val_len({})", resp->GetTypeName(), key, resp->ret_code(), resp->val_len());
     if (resp->ret_code() != 0) {
-      MLOG_ERROR("KVGet {} failed: {}", key, resp->ret_code());
+      MLOG_ERROR("KVGet key {} failed: {}", key, resp->ret_code());
       return ClntErr::ClntGetObjectFailed;
     }
   }
@@ -604,7 +711,7 @@ int32_t ClientMessenger::Get(const std::string &key, std::shared_ptr<simm::commo
 
 error_code_t ClientMessenger::AsyncGet(const std::string &key,
                                        std::shared_ptr<simm::common::MemBlock> memp,
-                                       std::function<void(int)> callback, 
+                                       std::function<void(int)> callback,
                                        std::shared_ptr<simm::common::SimmContext> ctx) {
   uint16_t shard_id = hashkit_->generate_16bit_hash_value(key.c_str(), key.length()) % shard_num_;
 
@@ -635,11 +742,11 @@ error_code_t ClientMessenger::AsyncGet(const std::string &key,
   auto resp = std::make_shared<KVGetResponsePB>();
   auto ds_ctx_before_req = shard_table_.at(shard_id);
   auto gen_num_before_req = ds_ctx_before_req->gen_num.load();
-  auto done = [this, resp, key, gen_num_before_req, shard_id, cb = std::move(callback)](
+  auto done = [this, resp, key, ds_ctx_before_req, gen_num_before_req, shard_id, cb = std::move(callback)](
                   const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> rpc_ctx) {
     if (rpc_ctx->Failed()) {
-      MLOG_ERROR("Async get object {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
-      ReconnectByErrors(rpc_ctx, this->shard_table_.at(shard_id), shard_id, gen_num_before_req);
+      MLOG_ERROR("Async get key {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
+      HandleAsyncRequestFailure(rpc_ctx, ds_ctx_before_req, shard_id, gen_num_before_req);
       cb(rpc_ctx->ErrorCode());
     } else {
       auto new_resp = static_cast<const KVGetResponsePB *>(rsp);
@@ -649,7 +756,7 @@ error_code_t ClientMessenger::AsyncGet(const std::string &key,
                  new_resp->ret_code(),
                  new_resp->val_len());
       if (new_resp->ret_code() != 0) {
-        MLOG_ERROR("AsyncKVGet {} failed: {}", key, new_resp->ret_code());
+        MLOG_ERROR("AsyncKVGet key {} failed: {}", key, new_resp->ret_code());
         cb(new_resp->ret_code());
       } else {
         cb(new_resp->val_len());
@@ -657,9 +764,9 @@ error_code_t ClientMessenger::AsyncGet(const std::string &key,
     }
   };
 
-  #ifdef SIMM_APIPERF
-    auto t1 = std::chrono::steady_clock::now();
-  #endif
+#ifdef SIMM_APIPERF
+  auto t1 = std::chrono::steady_clock::now();
+#endif
   call_async<KVGetRequestPB, KVGetResponsePB>(
       shard_id,
       static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_GET),
@@ -667,11 +774,12 @@ error_code_t ClientMessenger::AsyncGet(const std::string &key,
       resp,
       ctx,
       std::move(done));
-  #ifdef SIMM_APIPERF
-    auto t2 = std::chrono::steady_clock::now();
-    MLOG_INFO("Perf-aget-callasync key:{} Lat:{} us", key, 
-          std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
-  #endif
+#ifdef SIMM_APIPERF
+  auto t2 = std::chrono::steady_clock::now();
+  MLOG_INFO("Perf-aget-callasync key:{} Lat:{} us",
+            key,
+            std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
+#endif
 
   return CommonErr::OK;
 }
@@ -692,18 +800,22 @@ error_code_t ClientMessenger::Delete(const std::string &key, std::shared_ptr<sim
   auto ret = call_sync<KVDelRequestPB, KVDelResponsePB>(
       shard_id, static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_DEL), req, resp, ctx);
   if (ret != CommonErr::OK) {
-    MLOG_ERROR("Delete object {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
+    MLOG_ERROR("Delete key {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
+    return ret;
   } else {
     MLOG_DEBUG("{}: key({}) ret_code({})", resp->GetTypeName(), key, resp->ret_code());
     if (resp->ret_code() != 0) {
-      MLOG_ERROR("KVDelete {} failed: {}", key, resp->ret_code());
+      MLOG_ERROR("KVDelete key {} failed: {}", key, resp->ret_code());
+      return static_cast<error_code_t>(resp->ret_code());
     }
   }
 
   return CommonErr::OK;
 }
 
-error_code_t ClientMessenger::AsyncDelete(const std::string &key, std::function<void(int)> callback, std::shared_ptr<simm::common::SimmContext> ctx) {
+error_code_t ClientMessenger::AsyncDelete(const std::string &key,
+                                          std::function<void(int)> callback,
+                                          std::shared_ptr<simm::common::SimmContext> ctx) {
   uint16_t shard_id = hashkit_->generate_16bit_hash_value(key.c_str(), key.length()) % shard_num_;
 
   // build KVDel rpc
@@ -718,17 +830,17 @@ error_code_t ClientMessenger::AsyncDelete(const std::string &key, std::function<
   auto resp = std::make_shared<KVDelResponsePB>();
   auto ds_ctx_before_req = shard_table_.at(shard_id);
   auto gen_num_before_req = ds_ctx_before_req->gen_num.load();
-  auto done = [this, resp, key, gen_num_before_req, shard_id, cb = std::move(callback)](
+  auto done = [this, resp, key, ds_ctx_before_req, gen_num_before_req, shard_id, cb = std::move(callback)](
                   const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> rpc_ctx) {
     if (rpc_ctx->Failed()) {
-      MLOG_ERROR("Async delete kv {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
-      ReconnectByErrors(rpc_ctx, this->shard_table_.at(shard_id), shard_id, gen_num_before_req);
+      MLOG_ERROR("AsyncDelete key {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
+      HandleAsyncRequestFailure(rpc_ctx, ds_ctx_before_req, shard_id, gen_num_before_req);
       cb(rpc_ctx->ErrorCode());
     } else {
       auto new_resp = static_cast<const KVDelResponsePB *>(rsp);
       MLOG_DEBUG("{}: key({}) ret_code({})", new_resp->GetTypeName(), key, new_resp->ret_code());
       if (new_resp->ret_code() != 0) {
-        MLOG_ERROR("AsyncKVDelete {} failed: {}", key, new_resp->ret_code());
+        MLOG_ERROR("AsyncKVDelete key {} failed: {}", key, new_resp->ret_code());
       }
       cb(new_resp->ret_code());
     }
@@ -760,12 +872,12 @@ error_code_t ClientMessenger::Exists(const std::string &key, std::shared_ptr<sim
   auto ret = call_sync<KVLookupRequestPB, KVLookupResponsePB>(
       shard_id, static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_LOOKUP), req, resp, ctx);
   if (ret != CommonErr::OK) {
-    MLOG_ERROR("Lookup kv {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
+    MLOG_ERROR("Lookup key {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
     return ret;
   } else {
     MLOG_DEBUG("{}: key({}) ret_code({})", resp->GetTypeName(), key, resp->ret_code());
     if (resp->ret_code() != 0) {
-      MLOG_ERROR("KVLookup {} failed: {}", key, resp->ret_code());
+      MLOG_ERROR("KVLookup key {} failed: {}", key, resp->ret_code());
       return resp->ret_code();
     }
   }
@@ -773,7 +885,9 @@ error_code_t ClientMessenger::Exists(const std::string &key, std::shared_ptr<sim
   return CommonErr::OK;
 }
 
-error_code_t ClientMessenger::AsyncExists(const std::string &key, std::function<void(int)> callback, std::shared_ptr<simm::common::SimmContext> ctx) {
+error_code_t ClientMessenger::AsyncExists(const std::string &key,
+                                          std::function<void(int)> callback,
+                                          std::shared_ptr<simm::common::SimmContext> ctx) {
   uint16_t shard_id = hashkit_->generate_16bit_hash_value(key.c_str(), key.length()) % shard_num_;
 
   // build KVLookup rpc
@@ -788,17 +902,17 @@ error_code_t ClientMessenger::AsyncExists(const std::string &key, std::function<
   auto resp = std::make_shared<KVLookupResponsePB>();
   auto ds_ctx_before_req = shard_table_.at(shard_id);
   auto gen_num_before_req = ds_ctx_before_req->gen_num.load();
-  auto done = [this, resp, key, gen_num_before_req, shard_id, cb = std::move(callback)](
+  auto done = [this, resp, key, ds_ctx_before_req, gen_num_before_req, shard_id, cb = std::move(callback)](
                   const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> rpc_ctx) {
     if (rpc_ctx->Failed()) {
-      MLOG_ERROR("Async lookup kv {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
-      ReconnectByErrors(rpc_ctx, this->shard_table_.at(shard_id), shard_id, gen_num_before_req);
+      MLOG_ERROR("Async lookup key {} rpc failed: {}({})", key, rpc_ctx->ErrorText(), rpc_ctx->ErrorCode());
+      HandleAsyncRequestFailure(rpc_ctx, ds_ctx_before_req, shard_id, gen_num_before_req);
       cb(rpc_ctx->ErrorCode());
     } else {
       auto new_resp = static_cast<const KVLookupResponsePB *>(rsp);
       MLOG_DEBUG("{}: key({}) ret_code({})", new_resp->GetTypeName(), key, new_resp->ret_code());
       if (new_resp->ret_code() != 0) {
-        MLOG_ERROR("AsyncKVLookup {} failed: {}", key, new_resp->ret_code());
+        MLOG_ERROR("AsyncKVLookup key {} failed: {}", key, new_resp->ret_code());
       }
       cb(new_resp->ret_code());
     }
@@ -820,17 +934,19 @@ std::vector<error_code_t> ClientMessenger::MultiPut(const std::vector<std::strin
     MLOG_ERROR("MultiPut: keys size {} not equal to datas size {}", keys.size(), datas.size());
     return std::vector<error_code_t>(keys.size(), CommonErr::InvalidArgument);
   }
-  auto multiGetResults = folly::coro::blockingWait([this, datas, keys]() -> folly::coro::Task<std::vector<error_code_t>> {
-    std::vector<folly::Future<error_code_t>> tasks;
-    for (size_t i = 0; i < keys.size(); ++i) {
-      auto key = keys[i];
-      auto memp = datas[i];
-      auto ctx = std::make_shared<simm::common::SimmContext>();
-      tasks.push_back(folly::via(&executor_, [this, key, memp, ctx]() -> error_code_t { return this->Put(key, memp, ctx); }));
-    }
-    auto results = co_await folly::coro::collectAllRange(std::move(tasks));
-    co_return results;
-  }());
+  auto multiGetResults =
+      folly::coro::blockingWait([this, datas, keys]() -> folly::coro::Task<std::vector<error_code_t>> {
+        std::vector<folly::Future<error_code_t>> tasks;
+        for (size_t i = 0; i < keys.size(); ++i) {
+          auto key = keys[i];
+          auto memp = datas[i];
+          auto ctx = std::make_shared<simm::common::SimmContext>();
+          tasks.push_back(
+              folly::via(&executor_, [this, key, memp, ctx]() -> error_code_t { return this->Put(key, memp, ctx); }));
+        }
+        auto results = co_await folly::coro::collectAllRange(std::move(tasks));
+        co_return results;
+      }());
 
   // Error handling and logging will happen in this->Put() and upper calls(like KVStore::MGet).
   // Now just return error code.
@@ -849,7 +965,8 @@ std::vector<int32_t> ClientMessenger::MultiGet(const std::vector<std::string> &k
       auto key = keys[i];
       auto memp = datas[i];
       auto ctx = std::make_shared<simm::common::SimmContext>();
-      tasks.push_back(folly::via(&executor_, [this, key, memp, ctx]() -> int32_t { return this->Get(key, memp, ctx); }));
+      tasks.push_back(
+          folly::via(&executor_, [this, key, memp, ctx]() -> int32_t { return this->Get(key, memp, ctx); }));
     }
     auto results = co_await folly::coro::collectAllRange(std::move(tasks));
     co_return results;
@@ -893,8 +1010,6 @@ inline sicl::transport::TimerTick ClientMessenger::convert_timeout_setting_to_ti
     return sicl::transport::TimerTick::TIMER_1S;
   } else if (timeout_ms <= 3000) {
     return sicl::transport::TimerTick::TIMER_3S;
-  } else if (timeout_ms <= 10000) {
-    return sicl::transport::TimerTick::TIMER_10S;
   } else if (timeout_ms <= 5000) {
     return sicl::transport::TimerTick::TIMER_5S;
   } else if (timeout_ms <= 10000) {

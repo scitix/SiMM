@@ -6,6 +6,10 @@
 
 #include <folly/concurrency/ConcurrentHashMap.h>
 
+#if defined(SIMM_UNIT_TEST)
+#include <gtest/gtest_prod.h>
+#endif
+
 #include "common/base/common_types.h"
 #include "common/errcode/errcode_def.h"
 
@@ -68,8 +72,15 @@ class ClusterManagerShardManager : public std::enable_shared_from_this<ClusterMa
   error_code_t ReassignOrphanedShards(const std::vector<shard_id_t> &orphaned_shards,
                                       const std::vector<std::shared_ptr<simm::common::NodeAddress>> &alive_servers);
 
+  // Mark shards routed to target nodes as unavailable (nullptr).
+  error_code_t MarkShardsUnavailableForNodes(const std::vector<std::string> &target_node_addresses);
+
   // should we need this interface?
-  void CleanRoutingTable() { mShardRoutingTable.clear(); };
+  void CleanRoutingTable() {
+    for (uint32_t i = 0; i < mShardNum; ++i) {
+      mShardRoutingTable.assign(i, nullptr);
+    }
+  };
 
   // TODO(ytji): create policy factory to create different shard placement
   // policies

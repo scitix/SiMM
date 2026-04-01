@@ -1,6 +1,10 @@
+#include <unistd.h>
+#include <csignal>
+#include <cstdlib>
+#include <sstream>
+
 #include <gtest/gtest.h>
 #include <rpc/rpc.h>
-
 
 #include "folly/Random.h"
 #include "folly/executors/IOThreadPoolExecutor.h"
@@ -9,20 +13,41 @@
 
 #include "transport/types.h"
 
-#include "common/logging/logging.h"
 #include "common/base/hash.h"
 #include "common/hashkit/murmurhash.h"
-#include "proto/ds_clnt_rpcs.pb.h"
-#include "rpc/rpc_context.h"
+#include "common/logging/logging.h"
+#include "data_server/ds_memory_allocator.h"
 #include "data_server/kv_rpc_handler.h"
 #include "data_server/kv_rpc_service.h"
+#include "proto/ds_clnt_rpcs.pb.h"
+#include "rpc/rpc_context.h"
 
 DECLARE_LOG_MODULE("data_server");
 DECLARE_uint64(memory_limit_bytes);
 DECLARE_uint32(ds_free_memory_usable_ratio);
+DECLARE_uint32(cm_hb_tolerance_count);
+DECLARE_bool(ds_process_exit_cm_disconnection);
 
 namespace simm {
 namespace ds {
+
+namespace {
+
+std::atomic<bool> g_sigterm_received{false};
+
+void TestSigTermHandler(int signal) {
+  if (signal == SIGTERM) {
+    g_sigterm_received.store(true);
+  }
+}
+
+std::string MakeShmPath(const std::string &shm_name) {
+  std::ostringstream oss;
+  oss << "/dev/shm/" << shm_name;
+  return oss.str();
+}
+
+}  // namespace
 
 size_t get_random_size(size_t min = 1, size_t max = 1UL << 22) {
   return folly::Random::rand32(min, max + 1);
@@ -52,6 +77,14 @@ class KVServiceTest : public ::testing::Test {
     ASSERT_EQ(ret, CommonErr::OK);
   }
 
+  void TearDown() override { rpcServicePtr.reset(); }
+
+  std::unique_ptr<KVRpcService> rpcServicePtr;
+};
+
+class KVServiceLightTest : public ::testing::Test {
+ protected:
+  void SetUp() override { rpcServicePtr = std::make_unique<KVRpcService>(); }
   void TearDown() override { rpcServicePtr.reset(); }
 
   std::unique_ptr<KVRpcService> rpcServicePtr;
@@ -214,10 +247,77 @@ TEST_F(KVServiceTest, TestClientHandlers) {
   serverPool->join();
   clientPool->join();
 }
+
+TEST_F(KVServiceLightTest, TestHeartbeatFailureCountResetOnSuccess) {
+  rpcServicePtr->heartbeat_failure_count_.store(4);
+  rpcServicePtr->cm_ready_.store(true);
+
+  rpcServicePtr->OnHeartbeatResult(false, CommonErr::OK);
+  EXPECT_EQ(rpcServicePtr->heartbeat_failure_count_.load(), 0);
+  EXPECT_TRUE(rpcServicePtr->cm_ready_.load());
+
+  rpcServicePtr->OnHeartbeatResult(true, CommonErr::InvalidArgument);
+  EXPECT_EQ(rpcServicePtr->heartbeat_failure_count_.load(), 1);
+}
+
+TEST_F(KVServiceLightTest, TestClusterManagerDisconnectHandlerInvokedOnToleranceReached) {
+  auto old_flag = FLAGS_ds_process_exit_cm_disconnection;
+  auto restore_flag = folly::makeGuard([&]() { FLAGS_ds_process_exit_cm_disconnection = old_flag; });
+  FLAGS_ds_process_exit_cm_disconnection = true;
+
+  bool disconnect_handler_invoked = false;
+  rpcServicePtr->cluster_disconnect_handler_ = [&]() { disconnect_handler_invoked = true; };
+  rpcServicePtr->heartbeat_failure_count_.store(FLAGS_cm_hb_tolerance_count - 1);
+
+  rpcServicePtr->OnHeartbeatResult(true, CommonErr::InvalidArgument);
+
+  EXPECT_TRUE(disconnect_handler_invoked);
+  EXPECT_EQ(rpcServicePtr->heartbeat_failure_count_.load(), 0);
+}
+
+TEST_F(KVServiceLightTest, TestHeartbeatFailureToleranceTriggersReconnectWhenExitDisabled) {
+  auto old_flag = FLAGS_ds_process_exit_cm_disconnection;
+  auto restore_flag = folly::makeGuard([&]() { FLAGS_ds_process_exit_cm_disconnection = old_flag; });
+  FLAGS_ds_process_exit_cm_disconnection = false;
+
+  bool disconnect_handler_invoked = false;
+  rpcServicePtr->cluster_disconnect_handler_ = [&]() { disconnect_handler_invoked = true; };
+  rpcServicePtr->heartbeat_failure_count_.store(FLAGS_cm_hb_tolerance_count - 1);
+  rpcServicePtr->cm_ready_.store(true);
+
+  rpcServicePtr->OnHeartbeatResult(true, CommonErr::InvalidArgument);
+
+  EXPECT_FALSE(disconnect_handler_invoked);
+  EXPECT_FALSE(rpcServicePtr->cm_ready_.load());
+  EXPECT_EQ(rpcServicePtr->heartbeat_failure_count_.load(), 0);
+}
+
+TEST_F(KVServiceLightTest, TestClusterManagerDisconnectSignalPathRaisesSigterm) {
+  g_sigterm_received.store(false);
+  auto prev_handler = std::signal(SIGTERM, TestSigTermHandler);
+  auto restore_handler = folly::makeGuard([&]() { std::signal(SIGTERM, prev_handler); });
+
+  rpcServicePtr->cluster_disconnect_handler_();
+  EXPECT_TRUE(g_sigterm_received.load());
+}
+
+TEST_F(KVServiceLightTest, TestShmAllocatorDestructorReleasesSharedMemory) {
+  auto shm_name = "simm_ds_test_shm_" + std::to_string(getpid()) + "_" + std::to_string(folly::Random::rand32());
+  auto shm_path = MakeShmPath(shm_name);
+
+  {
+    ShmAllocator allocator;
+    MemBlock block(4096, shm_name.c_str());
+    ASSERT_EQ(allocator.allocate(&block), 0);
+    ASSERT_EQ(access(shm_path.c_str(), F_OK), 0);
+  }
+
+  EXPECT_NE(access(shm_path.c_str(), F_OK), 0) << "shared memory should be unlinked after allocator destruction";
+}
 }  // namespace ds
 }  // namespace simm
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();

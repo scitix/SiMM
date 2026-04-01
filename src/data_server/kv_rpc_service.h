@@ -2,13 +2,20 @@
 
 #include <gflags/gflags_declare.h>
 #include <atomic>
+#include <csignal>
+#include <cstdlib>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 
+#if defined(SIMM_UNIT_TEST)
+#include <gtest/gtest_prod.h>
+#endif
+
 #include "common/base/common_types.h"
 #include "common/base/consts.h"
-#include "common/errcode/errcode_def.h"
 #include "common/context/context.h"
+#include "common/errcode/errcode_def.h"
 #include "folly/synchronization/Baton.h"
 #include "rpc/connection.h"
 #include "rpc/rpc.h"
@@ -81,12 +88,14 @@ class KVRpcService {
   void RegisterOnCluster();
   void RegisterToRestartedManager();
   void HeartBeatToCluster();
+  void OnHeartbeatResult(bool rpc_failed, error_code_t ret_code);
+  void HandleClusterManagerDisconnect();
 
  private:
-  std::unique_ptr<sicl::rpc::SiRPC> io_service_{nullptr};   // for client io requests
-  std::unique_ptr<sicl::rpc::SiRPC> mgmt_client_{nullptr};  // for service controls
-  std::unique_ptr<sicl::rpc::SiRPC> mgt_service_{nullptr};  // for service controls
-  std::unique_ptr<sicl::rpc::SiRPC> admin_rpc_service_{nullptr}; // for maintainence scenario
+  std::unique_ptr<sicl::rpc::SiRPC> io_service_{nullptr};         // for client io requests
+  std::unique_ptr<sicl::rpc::SiRPC> mgmt_client_{nullptr};        // for service controls
+  std::unique_ptr<sicl::rpc::SiRPC> mgt_service_{nullptr};        // for service controls
+  std::unique_ptr<sicl::rpc::SiRPC> admin_rpc_service_{nullptr};  // for maintainence scenario
 
   std::unique_ptr<KVObjectPool> object_pool_{nullptr};
   std::unique_ptr<KVCachePool> cache_pool_{nullptr};
@@ -102,8 +111,14 @@ class KVRpcService {
   folly::Baton<> register_condv_;
   std::mutex heartbeat_mutex_;
   std::condition_variable heartbeat_condv_;
-  std::atomic<uint32_t> heartbeat_failure_count{0};
+  std::atomic<uint32_t> heartbeat_failure_count_{0};
   std::unique_ptr<std::thread> keepalive_thread_{nullptr};
+  std::function<void()> cluster_disconnect_handler_{[]() {
+    // raise SIGTERM to trigger handler to do data_server clean destruction
+    if (std::raise(SIGTERM) != 0) {
+      std::_Exit(EXIT_FAILURE);
+    }
+  }};
 
   std::string local_ip_;
   std::deque<std::atomic<size_t>> shard_used_bytes_;
@@ -111,6 +126,11 @@ class KVRpcService {
   friend class KVCacheEvictor;
 #if defined(SIMM_UNIT_TEST)
   FRIEND_TEST(KVServiceTest, TestClientHandlers);
+  FRIEND_TEST(KVServiceLightTest, TestHeartbeatFailureCountResetOnSuccess);
+  FRIEND_TEST(KVServiceLightTest, TestClusterManagerDisconnectHandlerInvokedOnToleranceReached);
+  FRIEND_TEST(KVServiceLightTest, TestHeartbeatFailureToleranceTriggersReconnectWhenExitDisabled);
+  FRIEND_TEST(KVServiceLightTest, TestClusterManagerDisconnectSignalPathRaisesSigterm);
+  FRIEND_TEST(KVServiceLightTest, TestShmAllocatorDestructorReleasesSharedMemory);
 #endif
 };
 

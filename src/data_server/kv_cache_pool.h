@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -9,13 +10,17 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
-#include <condition_variable>
+
+#if defined(SIMM_UNIT_TEST)
+#include <gtest/gtest_prod.h>
+#endif
+
 #include "common/base/common_types.h"
 #include "common/base/consts.h"
 #include "data_server/ds_common.h"
 #include "data_server/ds_memory_allocator.h"
-#include "transport/mempool.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"
+#include "transport/mempool.h"
 
 namespace simm {
 namespace ds {
@@ -122,9 +127,15 @@ constexpr size_t slab_index(SlabClass sc) {
 }
 
 // Slab sizes in bytes
-constexpr size_t SLAB_CLASS_SIZES[] = {0, 1ULL << 12, 1ULL << 15,
-                                      1ULL << 18, 1ULL << 20, 1ULL << 22,
-                                      1ULL << 23, 1ULL << 24, (1ULL << 26) - (20ULL << 10)};
+constexpr size_t SLAB_CLASS_SIZES[] = {0,
+                                       1ULL << 12,
+                                       1ULL << 15,
+                                       1ULL << 18,
+                                       1ULL << 20,
+                                       1ULL << 22,
+                                       1ULL << 23,
+                                       1ULL << 24,
+                                       (1ULL << 26) - (20ULL << 10)};
 
 // Get size in bytes of a slab class
 constexpr size_t slab_size(SlabClass sc) {
@@ -136,7 +147,8 @@ constexpr size_t max_slab_cnt(size_t slab_sz) {
   for (size_t n = 1;; n++) {
     size_t meta_aligned = align_up(n * META_SIZE, PAGE_SIZE);
     size_t total = HEADER_SIZE + meta_aligned + n * slab_sz;
-    if (total > CHUNK_SIZE) break;
+    if (total > CHUNK_SIZE)
+      break;
     max_n = n;
   }
   return max_n;
@@ -240,7 +252,7 @@ struct KVMeta {
   uint64_t value_crc;    // 8 bytes
   uint32_t ctime;        // 4 bytes
   uint32_t ttl;          // 4 bytes
-  char* key_ptr;         // 8 bytes (tmp pointer to key string)
+  char *key_ptr;         // 8 bytes (tmp pointer to key string)
   uint32_t shard_id;     // 4 bytes
   uint8_t reserved[20];  // 20 bytes
   char key[448];         // 448 bytes (total 512 bytes)
@@ -322,7 +334,7 @@ class KVCachePool {
   }
 
  private:
-  void clean_stale_block(const std::string& shm_path);
+  void clean_stale_block(const std::string &shm_path);
 
   bool init_block(size_t idx);
 
@@ -362,7 +374,7 @@ class KVCachePool {
     FREETOUSE = 14,
     ALLOCATE = 15,
   };
-  // each block uses 64 bits to represent status of all chunks(16) 
+  // each block uses 64 bits to represent status of all chunks(16)
   std::deque<std::atomic<uint64_t>> chunk_status_;
 
   // each chunk uses a counter to write down assigned number

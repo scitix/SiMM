@@ -5,7 +5,9 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
+#include <unordered_set>
 
 #include <folly/concurrency/AtomicSharedPtr.h>
 #include <folly/concurrency/ConcurrentHashMap.h>
@@ -25,6 +27,7 @@
 #include "common/base/memory.h"
 #include "common/errcode/errcode_def.h"
 #include "common/hashkit/hashkit.h"
+#include "proto/cm_clnt_rpcs.pb.h"
 
 #include "common/trace/trace_server.h"
 
@@ -33,6 +36,10 @@ namespace clnt {
 
 using Callback =
     std::function<void(const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx)>;
+
+#if defined(SIMM_UNIT_TEST)
+class ClientMessengerTestPeer;
+#endif
 
 class ClientMessenger {
  public:
@@ -64,13 +71,11 @@ class ClientMessenger {
                         std::shared_ptr<simm::common::MemBlock> memp,
                         std::function<void(int)> callback,
                         std::shared_ptr<simm::common::SimmContext> ctx);
-  error_code_t Exists(const std::string &key,
-                      std::shared_ptr<simm::common::SimmContext> ctx);
+  error_code_t Exists(const std::string &key, std::shared_ptr<simm::common::SimmContext> ctx);
   error_code_t AsyncExists(const std::string &key,
                            std::function<void(int)> callback,
                            std::shared_ptr<simm::common::SimmContext> ctx);
-  error_code_t Delete(const std::string &key,
-                      std::shared_ptr<simm::common::SimmContext> ctx);
+  error_code_t Delete(const std::string &key, std::shared_ptr<simm::common::SimmContext> ctx);
   error_code_t AsyncDelete(const std::string &key,
                            std::function<void(int)> callback,
                            std::shared_ptr<simm::common::SimmContext> ctx);
@@ -117,8 +122,9 @@ class ClientMessenger {
                        std::shared_ptr<simm::common::SimmContext> ctx,
                        Callback callback);
 
-  // Send rpc request to cluster_manager ip:port, get newest routing talbe and update entire local routing table
-  std::pair<error_code_t, std::vector<std::string>> update_all_route_table(const std::string &ip_port);
+  // Send rpc request to cluster_manager ip:port, get newest routing table.
+  std::pair<error_code_t, std::shared_ptr<QueryShardRoutingTableAllResponsePB>> update_all_route_table(
+      const std::string &ip_port);
 
   struct ConnectionContext;  // forward declaration
   // Trigger reconnect to data server upon specified rpc errors
@@ -126,20 +132,45 @@ class ClientMessenger {
                          std::shared_ptr<ConnectionContext> ds_ctx,
                          uint16_t shard_id,
                          size_t old_conn_gen_num);
+  std::shared_ptr<ConnectionContext> GetOrCreateConnectionContext(const std::string &addr);
+  void PruneStaleConnectionContexts(const std::unordered_set<std::string> &live_servers);
+  void HandleAsyncRequestFailure(std::shared_ptr<sicl::rpc::RpcContext> rpc_ctx,
+                                 std::shared_ptr<ConnectionContext> request_ds_ctx,
+                                 uint16_t shard_id,
+                                 size_t old_conn_gen_num);
 
   // Convert timeout setting from user in milliseconds to sicl TimerTick type
   sicl::transport::TimerTick convert_timeout_setting_to_timer_tick(int32_t timeout_ms);
 
+  void ReleaseConnectionContext(const std::shared_ptr<ConnectionContext> &ds_ctx);
+  error_code_t ApplyRouteTableDiff(const QueryShardRoutingTableAllResponsePB &routing);
+
+#if defined(SIMM_UNIT_TEST)
+  friend class ClientMessengerTestPeer;
+#endif
+
  private:
   struct ConnectionContext {
     std::string ip_port;
-    std::shared_ptr<sicl::rpc::Connection> connection;
     std::atomic<bool> active{false};
     /// monotonic to prevent ABA (race condition)
     std::atomic<size_t> gen_num{0};
 
-    ConnectionContext(const std::string &_ip_port)
-        : ip_port(_ip_port), connection{nullptr}, active(false), gen_num(0) {}
+    ConnectionContext(const std::string &_ip_port) : ip_port(_ip_port), active(false), gen_num(0) {}
+
+    void StoreConnection(std::shared_ptr<sicl::rpc::Connection> new_connection) {
+      std::unique_lock lock(connection_mutex_);
+      connection_ = std::move(new_connection);
+    }
+
+    std::shared_ptr<sicl::rpc::Connection> LoadConnection() const {
+      std::shared_lock lock(connection_mutex_);
+      return connection_;
+    }
+
+   private:
+    mutable std::shared_mutex connection_mutex_;
+    std::shared_ptr<sicl::rpc::Connection> connection_{nullptr};
   };
 
   // cluster manager address
@@ -159,7 +190,7 @@ class ClientMessenger {
 
   // sicl objects
   sicl::rpc::SiRPC *rpc_client_{nullptr};
-  sicl::rpc::SiRPC *admin_rpc_service_{nullptr}; 
+  sicl::rpc::SiRPC *admin_rpc_service_{nullptr};
   sicl::transport::IbvDeviceManager *ibv_mgr_{nullptr};
   sicl::transport::Mempool *mempool_{nullptr};
 
@@ -177,6 +208,15 @@ class ClientMessenger {
   std::mutex failover_mutex_;
   std::condition_variable failover_condv_;
   std::unique_ptr<simm::trace::TraceServer> trace_server_{nullptr};
+
+#if defined(SIMM_UNIT_TEST)
+ private:
+  // ONLY for mock UT cases
+  std::function<std::string()> test_get_cm_address_hook_{nullptr};
+  std::function<std::pair<error_code_t, std::shared_ptr<QueryShardRoutingTableAllResponsePB>>(const std::string &)>
+      test_route_query_hook_{nullptr};
+  std::function<error_code_t(const std::string &)> test_build_connection_hook_{nullptr};
+#endif
 };
 
 }  // namespace clnt
