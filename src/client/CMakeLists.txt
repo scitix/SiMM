@@ -13,7 +13,14 @@ file(GLOB MODULE_SRC
 )
 
 add_library(${MODULE_NAME}_static STATIC ${MODULE_SRC})
-# PRIVATE means that the libraries are only used by this target and 
+if(ENABLE_TESTS)
+  target_compile_definitions(${MODULE_NAME}_static PRIVATE SIMM_UNIT_TEST)
+  target_include_directories(${MODULE_NAME}_static PRIVATE
+    ${PROJECT_SOURCE_DIR}/third_party/gtest/googletest/include
+  )
+endif()
+
+# PRIVATE means that the libraries are only used by this target and
 # not propagated to targets that link against this one.
 #
 # **Caution** about sict, it maybe loaded by shared library at runtime, so

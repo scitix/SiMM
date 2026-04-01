@@ -1,5 +1,6 @@
 #include <rpc/rpc.h>
 #include <atomic>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 
@@ -10,11 +11,11 @@
 
 #include "cluster_manager/cm_rpc_handler.h"
 #include "common/base/consts.h"
+#include "common/context/context.h"
 #include "common/errcode/errcode_def.h"
 #include "common/logging/logging.h"
 #include "common/rpc_handlers/common_rpc_handlers.h"
 #include "common/trace/trace.h"
-#include "common/context/context.h"
 #include "common/utils/ip_util.h"
 #include "common/utils/k8s_util.h"
 #include "common/utils/sys_util.h"
@@ -36,6 +37,7 @@ DECLARE_string(cm_namespace);
 DECLARE_string(cm_svc_name);
 DECLARE_string(cm_port_name);
 DECLARE_uint32(cm_hb_tolerance_count);
+DECLARE_bool(ds_process_exit_cm_disconnection);
 DECLARE_bool(simm_enable_trace);
 
 namespace simm {
@@ -113,8 +115,8 @@ error_code_t KVRpcService::Init() {
       system_level_free_memory = static_cast<uint64_t>(result);
     }
     auto cache_bound_bytes = system_level_free_memory * FLAGS_ds_free_memory_usable_ratio / 100;
-    int ret = cache_pool_->init(cache_bound_bytes, io_service->GetMempool(),
-        cache_evictor_.get(), FLAGS_ds_initial_blocks);
+    int ret =
+        cache_pool_->init(cache_bound_bytes, io_service->GetMempool(), cache_evictor_.get(), FLAGS_ds_initial_blocks);
     if (ret) {
       MLOG_ERROR("KVRpcService::Init new cache pool failed, ret:{}", ret);
       return DsErr::InitFailed;
@@ -176,7 +178,8 @@ error_code_t KVRpcService::StartRPCServices() {
   }
   res = mgt_service_->Start(FLAGS_mgt_service_port);
   if (static_cast<sicl::transport::Result>(res) != sicl::transport::Result::SICL_SUCCESS) {
-    MLOG_ERROR("Failed to start RPC management service on port:{}, res:{}", FLAGS_mgt_service_port, std::to_string(res));
+    MLOG_ERROR(
+        "Failed to start RPC management service on port:{}, res:{}", FLAGS_mgt_service_port, std::to_string(res));
     return DsErr::InitRPCServiceFailed;
   }
   res = admin_rpc_service_->Start(FLAGS_ds_rpc_admin_port);
@@ -193,29 +196,29 @@ error_code_t KVRpcService::RegisterHandlers() {
   res = io_service_->RegisterHandler(static_cast<sicl::rpc::ReqType>(ds::KVServerRpcType::RPC_CLIENT_KV_GET),
                                      new KVGetHandler(this, new KVGetRequestPB));
   if (!res) {
-    MLOG_ERROR("RegisterHandler for RPC_CLIENT_KV_GET({}) failed", 
-      static_cast<int>(ds::KVServerRpcType::RPC_CLIENT_KV_GET));
+    MLOG_ERROR("RegisterHandler for RPC_CLIENT_KV_GET({}) failed",
+               static_cast<int>(ds::KVServerRpcType::RPC_CLIENT_KV_GET));
     return DsErr::RegisterRPCHandlerFailed;
   }
   res = io_service_->RegisterHandler(static_cast<sicl::rpc::ReqType>(ds::KVServerRpcType::RPC_CLIENT_KV_PUT),
                                      new KVPutHandler(this, new KVPutRequestPB));
   if (!res) {
-    MLOG_ERROR("RegisterHandler for RPC_CLIENT_KV_PUT({}) failed", 
-      static_cast<int>(ds::KVServerRpcType::RPC_CLIENT_KV_PUT));
+    MLOG_ERROR("RegisterHandler for RPC_CLIENT_KV_PUT({}) failed",
+               static_cast<int>(ds::KVServerRpcType::RPC_CLIENT_KV_PUT));
     return DsErr::RegisterRPCHandlerFailed;
   }
   res = io_service_->RegisterHandler(static_cast<sicl::rpc::ReqType>(ds::KVServerRpcType::RPC_CLIENT_KV_DEL),
                                      new KVDelHandler(this, new KVDelRequestPB));
   if (!res) {
-    MLOG_ERROR("RegisterHandler for RPC_CLIENT_KV_DEL({}) failed", 
-      static_cast<int>(ds::KVServerRpcType::RPC_CLIENT_KV_DEL));
+    MLOG_ERROR("RegisterHandler for RPC_CLIENT_KV_DEL({}) failed",
+               static_cast<int>(ds::KVServerRpcType::RPC_CLIENT_KV_DEL));
     return DsErr::RegisterRPCHandlerFailed;
   }
   res = io_service_->RegisterHandler(static_cast<sicl::rpc::ReqType>(ds::KVServerRpcType::RPC_CLIENT_KV_LOOKUP),
                                      new KVLookupHandler(this, new KVLookupRequestPB));
   if (!res) {
-    MLOG_ERROR("RegisterHandler for RPC_CLIENT_KV_LOOKUP({}) failed", 
-      static_cast<int>(ds::KVServerRpcType::RPC_CLIENT_KV_LOOKUP));
+    MLOG_ERROR("RegisterHandler for RPC_CLIENT_KV_LOOKUP({}) failed",
+               static_cast<int>(ds::KVServerRpcType::RPC_CLIENT_KV_LOOKUP));
     return DsErr::RegisterRPCHandlerFailed;
   }
   // control plane
@@ -223,8 +226,8 @@ error_code_t KVRpcService::RegisterHandlers() {
       static_cast<sicl::rpc::ReqType>(cm::ClusterManagerRpcType::RPC_DATASERVER_RESOURCE_QUERY),
       new MgtResourceHandler(this, new DataServerResourceRequestPB));
   if (!res) {
-    MLOG_ERROR("RegisterHandler for RPC_DATASERVER_RESOURCE_QUERY({}) failed", 
-      static_cast<int>(cm::ClusterManagerRpcType::RPC_DATASERVER_RESOURCE_QUERY));
+    MLOG_ERROR("RegisterHandler for RPC_DATASERVER_RESOURCE_QUERY({}) failed",
+               static_cast<int>(cm::ClusterManagerRpcType::RPC_DATASERVER_RESOURCE_QUERY));
     return DsErr::RegisterRPCHandlerFailed;
   }
   // admin
@@ -232,24 +235,24 @@ error_code_t KVRpcService::RegisterHandlers() {
       static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_GET_GFLAG_REQ),
       new simm::common::GetGFlagHandler(admin_rpc_service_.get(), new proto::common::GetGFlagValueRequestPB));
   if (!res) {
-    MLOG_ERROR("RegisterHandler for RPC_GET_GFLAG_REQ({}) failed", 
-      static_cast<int>(simm::common::CommonRpcType::RPC_GET_GFLAG_REQ));
+    MLOG_ERROR("RegisterHandler for RPC_GET_GFLAG_REQ({}) failed",
+               static_cast<int>(simm::common::CommonRpcType::RPC_GET_GFLAG_REQ));
     return DsErr::RegisterRPCHandlerFailed;
   }
   res = admin_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_SET_GFLAG_REQ),
       new simm::common::SetGFlagHandler(admin_rpc_service_.get(), new proto::common::SetGFlagValueRequestPB));
   if (!res) {
-    MLOG_ERROR("RegisterHandler for RPC_SET_GFLAG_REQ({}) failed", 
-      static_cast<int>(simm::common::CommonRpcType::RPC_SET_GFLAG_REQ));
+    MLOG_ERROR("RegisterHandler for RPC_SET_GFLAG_REQ({}) failed",
+               static_cast<int>(simm::common::CommonRpcType::RPC_SET_GFLAG_REQ));
     return DsErr::RegisterRPCHandlerFailed;
   }
   res = admin_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_GFLAGS_REQ),
       new simm::common::ListGFlagsHandler(admin_rpc_service_.get(), new proto::common::ListAllGFlagsRequestPB));
   if (!res) {
-    MLOG_ERROR("RegisterHandler for RPC_LIST_GFLAGS_REQ({}) failed", 
-      static_cast<int>(simm::common::CommonRpcType::RPC_LIST_GFLAGS_REQ));
+    MLOG_ERROR("RegisterHandler for RPC_LIST_GFLAGS_REQ({}) failed",
+               static_cast<int>(simm::common::CommonRpcType::RPC_LIST_GFLAGS_REQ));
     return DsErr::RegisterRPCHandlerFailed;
   }
 #ifdef SIMM_ENABLE_TRACE
@@ -257,8 +260,8 @@ error_code_t KVRpcService::RegisterHandlers() {
       static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_TRACE_TOGGLE_REQ),
       new simm::common::TraceToggleHandler(admin_rpc_service_.get(), new proto::common::TraceToggleRequestPB));
   if (!res) {
-    MLOG_ERROR("RegisterHandler for RPC_TRACE_TOGGLE_REQ({}) failed", 
-      static_cast<int>(simm::common::CommonRpcType::RPC_TRACE_TOGGLE_REQ));
+    MLOG_ERROR("RegisterHandler for RPC_TRACE_TOGGLE_REQ({}) failed",
+               static_cast<int>(simm::common::CommonRpcType::RPC_TRACE_TOGGLE_REQ));
     return DsErr::RegisterRPCHandlerFailed;
   }
 #endif
@@ -299,7 +302,7 @@ void KVRpcService::KeepAlive() {
     while (!is_registered_) {
       RegisterOnCluster();
       register_condv_.try_wait_for(std::chrono::seconds(FLAGS_register_cooldown_sec));
-      register_condv_.reset(); // folly::Bation should be reset before reuse
+      register_condv_.reset();  // folly::Bation should be reset before reuse
     }
     while (!cm_ready_) {
       register_condv_.reset();
@@ -384,15 +387,18 @@ void KVRpcService::RegisterToRestartedManager() {
       auto response = dynamic_cast<const NewNodeHandShakeResponsePB *>(rsp);
       auto ret_code = response->ret_code();
       if (ret_code == CommonErr::OK) {
-        heartbeat_failure_count.store(0);
+        heartbeat_failure_count_.store(0);
         cm_ready_ = true;
         register_condv_.post();
       } else {
         MLOG_ERROR("RegisterToRestartedManager return not OK: {}", ret_code);
       }
     } else {
-      MLOG_ERROR(
-          "Failed to RegisterToRestartedManager to Cluster Manager {}:{}: {} ({})", FLAGS_cm_primary_node_ip, FLAGS_cm_rpc_inter_port, ctx->ErrorText(), ctx->ErrorCode());
+      MLOG_ERROR("Failed to RegisterToRestartedManager to Cluster Manager {}:{}: {} ({})",
+                 FLAGS_cm_primary_node_ip,
+                 FLAGS_cm_rpc_inter_port,
+                 ctx->ErrorText(),
+                 ctx->ErrorCode());
     }
   };
 
@@ -421,20 +427,12 @@ void KVRpcService::HeartBeatToCluster() {
                                               const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
     if (!ctx->Failed()) {
       auto response = dynamic_cast<const DataServerHeartBeatResponsePB *>(rsp);
-      if (response->ret_code() == CommonErr::OK) {
-        // nothing
-      } else {
+      OnHeartbeatResult(false, response->ret_code());
+      if (response->ret_code() != CommonErr::OK) {
         MLOG_ERROR("HeartBeatToCluster return not OK");
       }
     } else {
-      heartbeat_failure_count.fetch_add(1);
-      MLOG_ERROR("Failed to HeartbeatToCluster to Cluster Manager {}:{} (counter={})",
-                 FLAGS_cm_primary_node_ip,
-                 FLAGS_cm_rpc_inter_port,
-                 heartbeat_failure_count.load());
-      if (heartbeat_failure_count.load() >= FLAGS_cm_hb_tolerance_count) {
-        cm_ready_.store(false);
-      }
+      OnHeartbeatResult(true, CommonErr::InvalidState);
     }
   };
 
@@ -445,6 +443,39 @@ void KVRpcService::HeartBeatToCluster() {
                             heartbeat_rsp.get(),
                             heartbeat_ctx,
                             heartbeat_done);
+}
+
+void KVRpcService::OnHeartbeatResult(bool rpc_failed, error_code_t ret_code) {
+  if (!rpc_failed && ret_code == CommonErr::OK) {
+    // reset failure counter after one HB request succeed
+    heartbeat_failure_count_.store(0);
+    return;
+  }
+
+  if (!rpc_failed) {
+    return;
+  }
+
+  const auto failure_count = heartbeat_failure_count_.fetch_add(1) + 1;
+  MLOG_ERROR("Failed to HeartbeatToCluster to Cluster Manager {}:{} (counter={})",
+             FLAGS_cm_primary_node_ip,
+             FLAGS_cm_rpc_inter_port,
+             failure_count);
+  if (failure_count >= FLAGS_cm_hb_tolerance_count) {
+    heartbeat_failure_count_.store(0);
+    if (FLAGS_ds_process_exit_cm_disconnection) {
+      MLOG_CRITICAL("Exit data server for disconnection(HB failed {} times) with cluster manager",
+                    FLAGS_cm_hb_tolerance_count);
+      HandleClusterManagerDisconnect();
+    } else {
+      MLOG_WARN("HB failed {} times with cluster manager, switch to CM re-register flow", FLAGS_cm_hb_tolerance_count);
+      cm_ready_.store(false);
+    }
+  }
+}
+
+void KVRpcService::HandleClusterManagerDisconnect() {
+  cluster_disconnect_handler_();
 }
 
 error_code_t KVRpcService::KVGet(std::shared_ptr<simm::common::SimmContext> ctx,
@@ -462,11 +493,11 @@ error_code_t KVRpcService::KVGet(std::shared_ptr<simm::common::SimmContext> ctx,
       return DsErr::KeyNotFound;
     }
   }
-  std::unique_ptr<KVMeta, KVObjectPool::KVMetaDeleter> key_meta(
-      object_pool_->AcquireKey(), KVObjectPool::KVMetaDeleter{});
+  std::unique_ptr<KVMeta, KVObjectPool::KVMetaDeleter> key_meta(object_pool_->AcquireKey(),
+                                                                KVObjectPool::KVMetaDeleter{});
   key_meta->key_hash = key_hash;
   key_meta->key_len = key_str.length();
-  key_meta->key_ptr= (char *)key_str.c_str();
+  key_meta->key_ptr = (char *)key_str.c_str();
   KVHashKey key(key_meta.get());
   KVEntryIntrusivePtr value;
   bool found = table->Find(key, value);
@@ -528,11 +559,11 @@ error_code_t KVRpcService::KVPut(std::shared_ptr<simm::common::SimmContext> ctx,
       all_tables_[shard_id] = table;
     }
   }
-  std::unique_ptr<KVMeta, KVObjectPool::KVMetaDeleter> key_meta(
-      object_pool_->AcquireKey(), KVObjectPool::KVMetaDeleter{});
+  std::unique_ptr<KVMeta, KVObjectPool::KVMetaDeleter> key_meta(object_pool_->AcquireKey(),
+                                                                KVObjectPool::KVMetaDeleter{});
   key_meta->key_hash = key_hash;
   key_meta->key_len = key_str.length();
-  key_meta->key_ptr= (char *)key_str.c_str();
+  key_meta->key_ptr = (char *)key_str.c_str();
   KVHashKey key(key_meta.get());
   KVEntryIntrusivePtr value;
   bool found = table->Find(key, value);
@@ -558,8 +589,8 @@ error_code_t KVRpcService::KVPut(std::shared_ptr<simm::common::SimmContext> ctx,
         value->ref_cnt_lock.ClearExclusive();
         return DsErr::CachePoolAllocateFailed;
       }
-      shard_used_bytes_[shard_id].fetch_add(
-          SLAB_CLASS_SIZES[value->slab_info.slab_class] + META_SIZE, std::memory_order_relaxed);
+      shard_used_bytes_[shard_id].fetch_add(SLAB_CLASS_SIZES[value->slab_info.slab_class] + META_SIZE,
+                                            std::memory_order_relaxed);
       auto [meta, _] = KVCachePool::GetBufferPair(&value->slab_info);
       meta->key_len = key_str.length();
       // meta->value_len = req->val_len(); since allocate success would write down value_len
@@ -583,8 +614,8 @@ error_code_t KVRpcService::KVPut(std::shared_ptr<simm::common::SimmContext> ctx,
         value->status.store(static_cast<uint32_t>(KVStatus::KV_CLEAR), std::memory_order_release);
         table->Remove(key);
         cache_pool_->free(&value->slab_info);
-        shard_used_bytes_[shard_id].fetch_sub(
-            SLAB_CLASS_SIZES[value->slab_info.slab_class] + META_SIZE, std::memory_order_relaxed);
+        shard_used_bytes_[shard_id].fetch_sub(SLAB_CLASS_SIZES[value->slab_info.slab_class] + META_SIZE,
+                                              std::memory_order_relaxed);
         value->ref_cnt_lock.ClearExclusive();
         return DsErr::HashTableOperationError;
       }
@@ -606,8 +637,8 @@ void KVRpcService::KVPutFailedRewind(uint32_t shard_id, KVEntryIntrusivePtr &ent
   KVHashKey key(meta);
   table->Remove(key);
   cache_pool_->free(&entry->slab_info);
-  shard_used_bytes_[shard_id].fetch_sub(
-      SLAB_CLASS_SIZES[entry->slab_info.slab_class] + META_SIZE, std::memory_order_relaxed);
+  shard_used_bytes_[shard_id].fetch_sub(SLAB_CLASS_SIZES[entry->slab_info.slab_class] + META_SIZE,
+                                        std::memory_order_relaxed);
   entry->ref_cnt_lock.ClearExclusive();
 }
 
@@ -625,8 +656,7 @@ void KVRpcService::KVPutSuccessHooks(KVEntryIntrusivePtr &entry) {
 #endif
 }
 
-error_code_t KVRpcService::KVDel(std::shared_ptr<simm::common::SimmContext> ctx,
-                                 const KVDelRequestPB *req) {
+error_code_t KVRpcService::KVDel(std::shared_ptr<simm::common::SimmContext> ctx, const KVDelRequestPB *req) {
   uint32_t shard_id = req->shard_id();
   auto &key_str = req->key();
   uint64_t key_hash = Hasher(key_str);
@@ -639,11 +669,11 @@ error_code_t KVRpcService::KVDel(std::shared_ptr<simm::common::SimmContext> ctx,
       return DsErr::KeyNotFound;
     }
   }
-  std::unique_ptr<KVMeta, KVObjectPool::KVMetaDeleter> key_meta(
-      object_pool_->AcquireKey(), KVObjectPool::KVMetaDeleter{});
+  std::unique_ptr<KVMeta, KVObjectPool::KVMetaDeleter> key_meta(object_pool_->AcquireKey(),
+                                                                KVObjectPool::KVMetaDeleter{});
   key_meta->key_hash = key_hash;
   key_meta->key_len = key_str.length();
-  key_meta->key_ptr= (char *)key_str.c_str();
+  key_meta->key_ptr = (char *)key_str.c_str();
   KVHashKey key(key_meta.get());
   KVEntryIntrusivePtr value;
   bool found = table->Find(key, value);
@@ -708,8 +738,8 @@ error_code_t KVRpcService::KVDel(std::shared_ptr<simm::common::SimmContext> ctx,
     if (cache_pool_->is_active(&value->slab_info)) {
       cache_pool_->free(&value->slab_info);
     }
-    shard_used_bytes_[shard_id].fetch_sub(
-        SLAB_CLASS_SIZES[value->slab_info.slab_class] + META_SIZE, std::memory_order_relaxed);
+    shard_used_bytes_[shard_id].fetch_sub(SLAB_CLASS_SIZES[value->slab_info.slab_class] + META_SIZE,
+                                          std::memory_order_relaxed);
     value->ref_cnt_lock.ClearExclusive();
     return CommonErr::OK;
   } else {
@@ -721,8 +751,7 @@ error_code_t KVRpcService::KVDel(std::shared_ptr<simm::common::SimmContext> ctx,
   return DsErr::KVStatusNotValid;
 }
 
-error_code_t KVRpcService::KVLookup(std::shared_ptr<simm::common::SimmContext> ctx,
-                                    const KVLookupRequestPB *req) {
+error_code_t KVRpcService::KVLookup(std::shared_ptr<simm::common::SimmContext> ctx, const KVLookupRequestPB *req) {
   uint32_t shard_id = req->shard_id();
   auto &key_str = req->key();
   uint64_t key_hash = Hasher(key_str);
@@ -735,11 +764,11 @@ error_code_t KVRpcService::KVLookup(std::shared_ptr<simm::common::SimmContext> c
       return DsErr::KeyNotFound;
     }
   }
-  std::unique_ptr<KVMeta, KVObjectPool::KVMetaDeleter> key_meta(
-      object_pool_->AcquireKey(), KVObjectPool::KVMetaDeleter{});
+  std::unique_ptr<KVMeta, KVObjectPool::KVMetaDeleter> key_meta(object_pool_->AcquireKey(),
+                                                                KVObjectPool::KVMetaDeleter{});
   key_meta->key_hash = key_hash;
   key_meta->key_len = key_str.length();
-  key_meta->key_ptr= (char *)key_str.c_str();
+  key_meta->key_ptr = (char *)key_str.c_str();
   KVHashKey key(key_meta.get());
   KVEntryIntrusivePtr value;
   bool found = table->Find(key, value);

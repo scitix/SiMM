@@ -3,8 +3,8 @@
 #include <string>
 #include <unordered_map>
 
-#include <gflags/gflags.h>
 #include <folly/Likely.h>
+#include <gflags/gflags.h>
 
 #include "cm_rpc_handler.h"
 #include "common/base/common_types.h"
@@ -44,6 +44,9 @@ static inline void FillRespWithRoutingTableEntryHelper(const simm::cm::QueryResu
   using pbMsgMapType = std::unordered_map<std::shared_ptr<simm::common::NodeAddress>, std::vector<shard_id_t>>;
   pbMsgMapType pb_msg_map;
   for (const auto &entry : resmap) {
+    if (!entry.second) {
+      continue;
+    }
     pb_msg_map[entry.second].push_back(entry.first);
   }
   for (const auto &map_entry : pb_msg_map) {
@@ -57,9 +60,19 @@ static inline void FillRespWithRoutingTableEntryHelper(const simm::cm::QueryResu
   }
 }
 
+static inline bool HasIncompleteRoutingEntries(const simm::cm::QueryResultMap &resmap) {
+  for (const auto &[shard_id, node_addr] : resmap) {
+    if (!node_addr) {
+      MLOG_WARN("Shard {} has no assigned dataserver in routing table", shard_id);
+      return true;
+    }
+  }
+  return false;
+}
+
 void NewNodeHandshakeHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
                                    const std::shared_ptr<sicl::rpc::Connection> conn,
-                  [[maybe_unused]] const google::protobuf::Message *request) const {
+                                   [[maybe_unused]] const google::protobuf::Message *request) const {
   auto req_begin_ts = std::chrono::steady_clock::now();
   auto req = dynamic_cast<const NewNodeHandShakeRequestPB *>(request);
   auto resp = std::make_shared<NewNodeHandShakeResponsePB>();
@@ -67,7 +80,7 @@ void NewNodeHandshakeHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> 
   error_code_t ret = CommonErr::OK;
   if (simm::common::ModuleServiceState::GetInstance().GracePeriodFinished()) {
     MLOG_INFO("Grace period is already finished, new dataserver({}) will be waited for joining the cluster",
-                node_addr.toString());
+              node_addr.toString());
     // already out of grace period, new dataserver nodes will be hold for
     // one timewindow, and be added in batch after current timewindow finishes
   } else {
@@ -75,16 +88,19 @@ void NewNodeHandshakeHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> 
     // FIXME(ytji): needn't to use NodeAddress as intermediary struct
     MLOG_INFO("Still in Grace period new dataserver({}) will be added into cluster", node_addr.toString());
     ret = node_manager_->AddNode(node_addr.toString());
-    shard_manager_->BatchAssignRoutingTable(std::vector<shard_id_t>(req->shard_ids().begin(), req->shard_ids().end()), 
-        std::make_shared<simm::common::NodeAddress>(node_addr));
+    shard_manager_->BatchAssignRoutingTable(std::vector<shard_id_t>(req->shard_ids().begin(), req->shard_ids().end()),
+                                            std::make_shared<simm::common::NodeAddress>(node_addr));
   }
-  
+
   if (ret != CommonErr::OK) {
     MLOG_ERROR("Failed to register new node({}) into cluster, ret:{}", node_addr.toString(), ret);
   }
   resp->set_ret_code(ret);
-  simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("hand_shake", static_cast<double>(
-      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+  simm::common::Metrics::Instance("cluster_manager")
+      .ObserveRequestDuration("hand_shake",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - req_begin_ts)
+                                                      .count()));
   simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("hand_shake");
   if (ret != CommonErr::OK) {
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("hand_shake");
@@ -115,8 +131,11 @@ void NodeHeartBeatHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx
   }
 
   resp->set_ret_code(ret);
-  simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("heart_beat", static_cast<double>(
-      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+  simm::common::Metrics::Instance("cluster_manager")
+      .ObserveRequestDuration("heart_beat",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - req_begin_ts)
+                                                      .count()));
   simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("heart_beat");
   if (ret != CommonErr::OK) {
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("heart_beat");
@@ -156,8 +175,11 @@ void RoutingTableQuerySingleHandler::Work(const std::shared_ptr<sicl::rpc::RpcCo
     MLOG_WARN("Cluster Manager is still in grace period, service is not ready yet");
     ret = CmErr::InitInGracePeriod;
     resp->set_ret_code(ret);
-    simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("query_routing_table_single", static_cast<double>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+    simm::common::Metrics::Instance("cluster_manager")
+        .ObserveRequestDuration("query_routing_table_single",
+                                static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                        std::chrono::steady_clock::now() - req_begin_ts)
+                                                        .count()));
     simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("query_routing_table_single");
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("query_routing_table_single");
     SEND_RESPONSE(ctx, resp);
@@ -168,13 +190,18 @@ void RoutingTableQuerySingleHandler::Work(const std::shared_ptr<sicl::rpc::RpcCo
   if (query_res.empty()) {
     MLOG_WARN("Target shard id({}) not found in global routing table", req->shard_id());
     ret = CommonErr::CmTargetShardIdNotFound;
+  } else if (HasIncompleteRoutingEntries(query_res)) {
+    ret = CommonErr::CmRoutingInfoNotComplete;
   } else {
     FillRespWithRoutingTableEntryHelper(query_res, resp.get());
   }
 
   resp->set_ret_code(ret);
-  simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("query_routing_table_single", static_cast<double>(
-      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+  simm::common::Metrics::Instance("cluster_manager")
+      .ObserveRequestDuration("query_routing_table_single",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - req_begin_ts)
+                                                      .count()));
   simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("query_routing_table_single");
   if (ret != CommonErr::OK) {
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("query_routing_table_single");
@@ -192,8 +219,11 @@ void RoutingTableQueryBatchHandler::Work(const std::shared_ptr<sicl::rpc::RpcCon
   if (FOLLY_UNLIKELY(!simm::common::ModuleServiceState::GetInstance().IsServiceReady())) {
     MLOG_WARN("Cluster Manager is still in grace period, service is not ready yet");
     resp->set_ret_code(CmErr::InitInGracePeriod);
-    simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("query_routing_table_batch", static_cast<double>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+    simm::common::Metrics::Instance("cluster_manager")
+        .ObserveRequestDuration("query_routing_table_batch",
+                                static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                        std::chrono::steady_clock::now() - req_begin_ts)
+                                                        .count()));
     simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("query_routing_table_batch");
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("query_routing_table_batch");
     SEND_RESPONSE(ctx, resp);
@@ -206,9 +236,13 @@ void RoutingTableQueryBatchHandler::Work(const std::shared_ptr<sicl::rpc::RpcCon
     MLOG_WARN("None of target shard ids found in global routing table, target_shards: {}", target_shards.size());
     resp->set_ret_code(CommonErr::CmTargetShardIdNotFound);
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("query_routing_table_batch");
+  } else if (HasIncompleteRoutingEntries(query_res)) {
+    resp->set_ret_code(CommonErr::CmRoutingInfoNotComplete);
+    simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("query_routing_table_batch");
   } else if (query_res.size() != target_shards.size()) {
     MLOG_WARN("Some target shard ids not found in routing table, target_shards: {}, found_shards: {}",
-              target_shards.size(), query_res.size());
+              target_shards.size(),
+              query_res.size());
     // TODO(ytji): what error code should we return here?
     resp->set_ret_code(CommonErr::OK);
   } else {
@@ -217,8 +251,11 @@ void RoutingTableQueryBatchHandler::Work(const std::shared_ptr<sicl::rpc::RpcCon
 
   FillRespWithRoutingTableEntryHelper(query_res, resp.get());
 
-  simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("query_routing_table_batch", static_cast<double>(
-      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+  simm::common::Metrics::Instance("cluster_manager")
+      .ObserveRequestDuration("query_routing_table_batch",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - req_begin_ts)
+                                                      .count()));
   simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("query_routing_table_batch");
   SEND_RESPONSE(ctx, resp);
 }
@@ -233,18 +270,26 @@ void RoutingTableQueryAllHandler::Work(const std::shared_ptr<sicl::rpc::RpcConte
   if (FOLLY_UNLIKELY(!simm::common::ModuleServiceState::GetInstance().IsServiceReady())) {
     MLOG_WARN("Cluster Manager is still in grace period, service is not ready yet");
     resp->set_ret_code(CmErr::InitInGracePeriod);
-    simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("query_routing_table_all", static_cast<double>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+    simm::common::Metrics::Instance("cluster_manager")
+        .ObserveRequestDuration("query_routing_table_all",
+                                static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                        std::chrono::steady_clock::now() - req_begin_ts)
+                                                        .count()));
     simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("query_routing_table_all");
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("query_routing_table_all");
     SEND_RESPONSE(ctx, resp);
-    return;;
+    return;
+    ;
   }
 
   simm::cm::QueryResultMap query_res = shard_manager_->QueryAllShardRoutingInfos();
   if (query_res.size() != FLAGS_shard_total_num) {
     MLOG_WARN("All routing table info query result is not complete, target_shards: {}, found_shards: {}",
-              FLAGS_shard_total_num, query_res.size());
+              FLAGS_shard_total_num,
+              query_res.size());
+    resp->set_ret_code(CommonErr::CmRoutingInfoNotComplete);
+    simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("query_routing_table_all");
+  } else if (HasIncompleteRoutingEntries(query_res)) {
     resp->set_ret_code(CommonErr::CmRoutingInfoNotComplete);
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("query_routing_table_all");
   } else {
@@ -253,8 +298,11 @@ void RoutingTableQueryAllHandler::Work(const std::shared_ptr<sicl::rpc::RpcConte
 
   FillRespWithRoutingTableEntryHelper(query_res, resp.get());
 
-  simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("query_routing_table_all", static_cast<double>(
-      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+  simm::common::Metrics::Instance("cluster_manager")
+      .ObserveRequestDuration("query_routing_table_all",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - req_begin_ts)
+                                                      .count()));
   simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("query_routing_table_all");
   SEND_RESPONSE(ctx, resp);
 }
@@ -268,8 +316,11 @@ void ListNodesHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
   if (FOLLY_UNLIKELY(!simm::common::ModuleServiceState::GetInstance().IsServiceReady())) {
     MLOG_WARN("Cluster Manager is still in grace period, service is not ready yet");
     resp->set_ret_code(CmErr::InitInGracePeriod);
-    simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("list_nodes", static_cast<double>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+    simm::common::Metrics::Instance("cluster_manager")
+        .ObserveRequestDuration("list_nodes",
+                                static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                        std::chrono::steady_clock::now() - req_begin_ts)
+                                                        .count()));
     simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("list_nodes");
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("list_nodes");
     SEND_RESPONSE(ctx, resp);
@@ -315,15 +366,18 @@ void ListNodesHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
   }
 
   resp->set_ret_code(CommonErr::OK);
-  simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("list_nodes", static_cast<double>(
-      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+  simm::common::Metrics::Instance("cluster_manager")
+      .ObserveRequestDuration("list_nodes",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - req_begin_ts)
+                                                      .count()));
   simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("list_nodes");
   SEND_RESPONSE(ctx, resp);
 }
 
 void SetNodeStatusHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
-                              const std::shared_ptr<sicl::rpc::Connection> conn,
-                              const google::protobuf::Message *request) const {
+                                const std::shared_ptr<sicl::rpc::Connection> conn,
+                                const google::protobuf::Message *request) const {
   auto req_begin_ts = std::chrono::steady_clock::now();
   auto req = dynamic_cast<const SetNodeStatusRequestPB *>(request);
   auto resp = std::make_shared<SetNodeStatusResponsePB>();
@@ -332,8 +386,11 @@ void SetNodeStatusHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx
   if (FOLLY_UNLIKELY(!simm::common::ModuleServiceState::GetInstance().IsServiceReady())) {
     MLOG_WARN("Cluster Manager is still in grace period, service is not ready yet");
     resp->set_ret_code(CommonErr::TargetUnavailable);
-    simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("set_node_status", static_cast<double>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+    simm::common::Metrics::Instance("cluster_manager")
+        .ObserveRequestDuration("set_node_status",
+                                static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                        std::chrono::steady_clock::now() - req_begin_ts)
+                                                        .count()));
     simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("set_node_status");
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("set_node_status");
     SEND_RESPONSE(ctx, resp);
@@ -342,12 +399,15 @@ void SetNodeStatusHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx
 
   // Not exist should return error directly, use another method
   std::string addr_str = req->node().ip() + ":" + std::to_string(req->node().port());
-  if(!node_manager_->QueryNodeExists(addr_str)) {
+  if (!node_manager_->QueryNodeExists(addr_str)) {
     MLOG_ERROR("Target node({}) does not exist in cluster, cannot set status", addr_str);
     ret = CommonErr::TargetNotFound;
     resp->set_ret_code(ret);
-    simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("set_node_status", static_cast<double>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+    simm::common::Metrics::Instance("cluster_manager")
+        .ObserveRequestDuration("set_node_status",
+                                static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                        std::chrono::steady_clock::now() - req_begin_ts)
+                                                        .count()));
     simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("set_node_status");
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("set_node_status");
     SEND_RESPONSE(ctx, resp);
@@ -363,8 +423,11 @@ void SetNodeStatusHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx
   }
 
   resp->set_ret_code(ret);
-  simm::common::Metrics::Instance("cluster_manager").ObserveRequestDuration("set_node_status", static_cast<double>(
-      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - req_begin_ts).count()));
+  simm::common::Metrics::Instance("cluster_manager")
+      .ObserveRequestDuration("set_node_status",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - req_begin_ts)
+                                                      .count()));
   simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("set_node_status");
   if (ret != CommonErr::OK) {
     simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("set_node_status");

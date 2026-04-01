@@ -7,10 +7,10 @@
 #include "rpc/rpc_context.h"
 #include "transport/types.h"
 
-#include "common/errcode/errcode_def.h"
 #include "cm_hb_monitor.h"
 #include "cm_node_manager.h"
 #include "cm_shard_manager.h"
+#include "common/errcode/errcode_def.h"
 
 namespace simm {
 namespace cm {
@@ -38,9 +38,9 @@ class ClusterManagerService {
   virtual ~ClusterManagerService();
 
   ClusterManagerService(const ClusterManagerService &) = delete;
-  ClusterManagerService& operator=(const ClusterManagerService &) = delete;
+  ClusterManagerService &operator=(const ClusterManagerService &) = delete;
   ClusterManagerService(ClusterManagerService &&) = delete;
-  ClusterManagerService& operator=(ClusterManagerService &&) = delete;
+  ClusterManagerService &operator=(ClusterManagerService &&) = delete;
 
  public:
   error_code_t Init();
@@ -69,10 +69,12 @@ class ClusterManagerService {
   std::atomic<bool> is_running_{false};
 
   // Node failure and rebalance
-  void HandleNodeFailure(const std::vector<std::string>& dead_node_addresses);
+  void HandleNodeFailure(const std::vector<std::string> &dead_node_addresses);
 
 #if defined(SIMM_UNIT_TEST)
   FRIEND_TEST(ClusterManagerServiceTest, TestQueryRoutingTableInfoRPCs);
+  FRIEND_TEST(ClusterManagerServiceTest, TestQueryRoutingTableRejectsRequestsDuringGracePeriod);
+  FRIEND_TEST(ClusterManagerServiceTest, TestQueryRoutingTableReturnsIncompleteWhenShardUnavailable);
   FRIEND_TEST(ClusterManagerServiceTest, TestNodeRejoinRPC);
 #endif
 };

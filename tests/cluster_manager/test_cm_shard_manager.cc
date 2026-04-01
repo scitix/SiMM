@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <folly/Random.h>
+#include <folly/ScopeGuard.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/experimental/coro/Collect.h>
@@ -21,6 +22,7 @@
 DECLARE_LOG_MODULE("cluster_manager");
 
 DECLARE_uint32(shard_total_num);
+DECLARE_uint32(dataserver_min_num);
 
 namespace simm {
 namespace cm {
@@ -30,17 +32,19 @@ using CmSmPtr = std::unique_ptr<simm::cm::ClusterManagerShardManager>;
 class ClusterManagerShardManagerTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    #ifdef NDEBUG
-      simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{"/tmp/simm_cm.log", "INFO"};
-    #else
-      simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{"/tmp/simm_cm.log", "DEBUG"};
-    #endif
-      simm::logging::LoggerManager::Instance().UpdateConfig("cluster_manager", cm_log_config);
+#ifdef NDEBUG
+    simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{"/tmp/simm_cm.log", "INFO"};
+#else
+    simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{"/tmp/simm_cm.log", "DEBUG"};
+#endif
+    simm::logging::LoggerManager::Instance().UpdateConfig("cluster_manager", cm_log_config);
 
     cm_shard_manager_ptr_ = std::make_unique<simm::cm::ClusterManagerShardManager>();
   }
 
-  void TearDown() override { cm_shard_manager_ptr_.reset(); }
+  void TearDown() override {
+    cm_shard_manager_ptr_.reset();
+  }
 
   CmSmPtr cm_shard_manager_ptr_{nullptr};
 };
@@ -51,7 +55,7 @@ TEST_F(ClusterManagerShardManagerTest, TestGetTotalShardNum) {
 
 TEST_F(ClusterManagerShardManagerTest, TestTriggerShardsMigration) {
   std::vector<shard_id_t> target_shards;
-  std::vector<simm::common::NodeAddress*> target_servers;
+  std::vector<simm::common::NodeAddress *> target_servers;
   error_code_t ret = cm_shard_manager_ptr_->TriggerShardsMigration(target_shards, target_servers);
   EXPECT_EQ(ret, CommonErr::NotImplemented);
 
@@ -72,8 +76,9 @@ TEST_F(ClusterManagerShardManagerTest, TestInitShardRoutingTable) {
   std::array<uint32_t, 8> kDataserverNumArray = {2, 8, 10, 50, 200, 500, 1000, 5000};
   // set different sub step length to check rounting table entry results
   std::array<uint32_t, 4> kCheckSubStepArray = {13, 71, 100, 255};
-  for (auto& kCheckSubStep : kCheckSubStepArray) {
-    for (auto& kDataserverNum : kDataserverNumArray) {
+  for (auto &kCheckSubStep : kCheckSubStepArray) {
+    for (auto &kDataserverNum : kDataserverNumArray) {
+      cm_shard_manager_ptr_->CleanRoutingTable();
       uint32_t totalShardNum = cm_shard_manager_ptr_->GetTotalShardNum();
       EXPECT_EQ(totalShardNum, FLAGS_shard_total_num);
       uint32_t step = totalShardNum / kDataserverNum;
@@ -110,7 +115,7 @@ TEST_F(ClusterManagerShardManagerTest, TestInitShardRoutingTable) {
       }
 
     next_loop:
-      for (auto& server : all_servers) {
+      for (auto &server : all_servers) {
         server.reset();
       }
       all_servers.clear();
@@ -121,7 +126,7 @@ TEST_F(ClusterManagerShardManagerTest, TestInitShardRoutingTable) {
   cm_shard_manager_ptr_->CleanRoutingTable();
 }
 
-folly::coro::Task<void> concurrentReadTask(const CmSmPtr& testMgrPtr) {
+folly::coro::Task<void> concurrentReadTask(const CmSmPtr &testMgrPtr) {
   constexpr uint32_t kRandQueryNum = 1000;
   for (uint32_t i = 0; i < kRandQueryNum; ++i) {
     uint32_t rand_shard_id = folly::Random::rand32(0, 16384);  // [min, max)
@@ -136,13 +141,13 @@ folly::coro::Task<void> concurrentReadTask(const CmSmPtr& testMgrPtr) {
   co_return;
 }
 
-folly::coro::Task<void> concurrentWriteTask(const CmSmPtr& testMgrPtr) {
+folly::coro::Task<void> concurrentWriteTask(const CmSmPtr &testMgrPtr) {
   constexpr uint32_t kRandModifyNum = 5000;
   for (uint32_t i = 0; i < kRandModifyNum; ++i) {
     uint32_t rand_shard_id = folly::Random::rand32(0, 16384);  // [min, max)
-    auto new_server = std::make_shared<simm::common::NodeAddress>(
-      "192.168.1." + std::to_string(folly::Random::rand32(0, 255)),
-      static_cast<int32_t>(folly::Random::rand32(30000, 40000)));
+    auto new_server =
+        std::make_shared<simm::common::NodeAddress>("192.168.1." + std::to_string(folly::Random::rand32(0, 255)),
+                                                    static_cast<int32_t>(folly::Random::rand32(30000, 40000)));
     auto ret = testMgrPtr->ModifyRoutingTable(rand_shard_id, new_server);
     EXPECT_EQ(ret, CommonErr::OK);
     // TODO(ytji) : maybe add some check for routing table after modify
@@ -258,7 +263,7 @@ TEST_F(ClusterManagerShardManagerTest, TestModifyShardRoutingTable) {
   // test single shard modify
   shard_id_t target_shard = 0;
   simm::cm::QueryResultMap resmap = cm_shard_manager_ptr_->QueryShardRoutingInfo(target_shard);
-  EXPECT_EQ(resmap.size(), 0);
+  EXPECT_EQ(resmap.size(), 1);
   EXPECT_EQ(resmap.at(target_shard)->node_ip_, "192.168.1.1");
   EXPECT_EQ(resmap.at(target_shard)->node_port_, 30000);
   auto new_server = std::make_shared<simm::common::NodeAddress>("192.168.1.3", 30002);
@@ -319,6 +324,57 @@ TEST_F(ClusterManagerShardManagerTest, TestModifyShardRoutingTable) {
   cm_shard_manager_ptr_->CleanRoutingTable();
 }
 
+TEST_F(ClusterManagerShardManagerTest, TestFailureBelowMinMarksDeadNodeShardsUnavailable) {
+  auto old_min_ds = FLAGS_dataserver_min_num;
+  auto restore_flag = folly::makeGuard([&]() { FLAGS_dataserver_min_num = old_min_ds; });
+  FLAGS_dataserver_min_num = 3;
+
+  std::vector<std::shared_ptr<simm::common::NodeAddress>> all_servers;
+  for (uint32_t i = 0; i < 3; ++i) {
+    all_servers.push_back(std::make_shared<simm::common::NodeAddress>("192.168.2." + std::to_string(i + 1), 32000 + i));
+  }
+
+  ASSERT_EQ(cm_shard_manager_ptr_->InitShardRoutingTable(all_servers), CommonErr::OK);
+  const auto failed_node = all_servers[0]->toString();
+
+  std::vector<std::shared_ptr<simm::common::NodeAddress>> alive_servers{all_servers[1], all_servers[2]};
+  EXPECT_EQ(cm_shard_manager_ptr_->RebalanceShardsAfterNodeFailure({failed_node}, alive_servers),
+            CmErr::InsufficientDataservers);
+
+  auto routing_info = cm_shard_manager_ptr_->QueryAllShardRoutingInfos();
+  uint32_t unavailable_shards = 0;
+  for (const auto &[shard_id, node_addr] : routing_info) {
+    if (!node_addr) {
+      ++unavailable_shards;
+      continue;
+    }
+    EXPECT_NE(node_addr->toString(), failed_node);
+  }
+  EXPECT_GT(unavailable_shards, 0U);
+}
+
+TEST_F(ClusterManagerShardManagerTest, TestFailureWithNoAliveServersMarksAllFailedNodeShardsUnavailable) {
+  std::vector<std::shared_ptr<simm::common::NodeAddress>> all_servers;
+  for (uint32_t i = 0; i < 3; ++i) {
+    all_servers.push_back(std::make_shared<simm::common::NodeAddress>("192.168.3." + std::to_string(i + 1), 33000 + i));
+  }
+
+  ASSERT_EQ(cm_shard_manager_ptr_->InitShardRoutingTable(all_servers), CommonErr::OK);
+
+  std::vector<std::string> failed_nodes;
+  for (const auto &server : all_servers) {
+    failed_nodes.push_back(server->toString());
+  }
+
+  EXPECT_EQ(cm_shard_manager_ptr_->RebalanceShardsAfterNodeFailure(failed_nodes, {}), CmErr::NoAvailableDataservers);
+
+  auto routing_info = cm_shard_manager_ptr_->QueryAllShardRoutingInfos();
+  ASSERT_EQ(routing_info.size(), FLAGS_shard_total_num);
+  for (const auto &[shard_id, node_addr] : routing_info) {
+    EXPECT_EQ(node_addr, nullptr) << "Shard " << shard_id << " should be unavailable when no dataservers are alive";
+  }
+}
+
 // copy from folly example test case
 TEST_F(ClusterManagerShardManagerTest, TestVectorOfTaskWithExecutorUsage) {
   folly::CPUThreadPoolExecutor threadPool{4, std::make_shared<folly::NamedThreadFactory>("TestThreadPool")};
@@ -341,7 +397,7 @@ TEST_F(ClusterManagerShardManagerTest, TestVectorOfTaskWithExecutorUsage) {
 }  // namespace cm
 }  // namespace simm
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();

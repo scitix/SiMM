@@ -18,6 +18,7 @@
 #include "common/base/common_types.h"
 #include "common/errcode/errcode_def.h"
 #include "common/logging/logging.h"
+#include "common/rpc_handlers/common_rpc_handlers.h"
 #include "proto/cm_clnt_rpcs.pb.h"
 #include "proto/ds_cm_rpcs.pb.h"
 
@@ -29,6 +30,7 @@ DECLARE_uint32(cm_cluster_init_grace_period_inSecs);
 DECLARE_string(cm_log_file);
 DECLARE_uint32(dataserver_min_num);
 DECLARE_string(cm_primary_node_ip);
+DECLARE_int32(cm_rpc_admin_port);
 
 namespace simm {
 namespace cm {
@@ -38,17 +40,19 @@ using CmSrvPtr = std::unique_ptr<simm::cm::ClusterManagerService>;
 class ClusterManagerServiceTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    #ifdef NDEBUG
-      simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{FLAGS_cm_log_file, "INFO"};
-    #else
-      simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{FLAGS_cm_log_file, "DEBUG"};
-    #endif
-      simm::logging::LoggerManager::Instance().UpdateConfig("cluster_manager", cm_log_config);
+#ifdef NDEBUG
+    simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{FLAGS_cm_log_file, "INFO"};
+#else
+    simm::logging::LogConfig cm_log_config = simm::logging::LogConfig{FLAGS_cm_log_file, "DEBUG"};
+#endif
+    simm::logging::LoggerManager::Instance().UpdateConfig("cluster_manager", cm_log_config);
 
     cm_service_ptr_ = std::make_unique<simm::cm::ClusterManagerService>();
   }
 
-  void TearDown() override { cm_service_ptr_.reset(); }
+  void TearDown() override {
+    cm_service_ptr_.reset();
+  }
 
   CmSrvPtr cm_service_ptr_{nullptr};
 };
@@ -65,8 +69,8 @@ TEST_F(ClusterManagerServiceTest, TestStartAndStop) {
   ret = cm_service_ptr_->Start();
   EXPECT_EQ(ret, CmErr::InitDataserverNodesTooFew);
   EXPECT_TRUE(!cm_service_ptr_->IsRunning());
-  //EXPECT_EQ(ret, CommonErr::OK);
-  //EXPECT_TRUE(cm_service_ptr_->IsRunning());
+  // EXPECT_EQ(ret, CommonErr::OK);
+  // EXPECT_TRUE(cm_service_ptr_->IsRunning());
 
   // FIXME(ytji) : for cm isn't started, so stop action also will fail
   ret = cm_service_ptr_->Stop();
@@ -74,6 +78,25 @@ TEST_F(ClusterManagerServiceTest, TestStartAndStop) {
   // EXPECT_EQ(ret, CommonErr::OK);
 
   FLAGS_cm_cluster_init_grace_period_inSecs = old_flag_val;
+}
+
+TEST_F(ClusterManagerServiceTest, TestStartFailureCleansUpRPCServices) {
+  auto old_grace = FLAGS_cm_cluster_init_grace_period_inSecs;
+  auto old_min_ds = FLAGS_dataserver_min_num;
+  FLAGS_cm_cluster_init_grace_period_inSecs = 1;
+  FLAGS_dataserver_min_num = 3;
+
+  ASSERT_EQ(cm_service_ptr_->Init(), CommonErr::OK);
+  auto ret = cm_service_ptr_->Start();
+  EXPECT_EQ(ret, CmErr::InitDataserverNodesTooFew);
+  EXPECT_FALSE(cm_service_ptr_->IsRunning());
+
+  ret = cm_service_ptr_->Start();
+  EXPECT_EQ(ret, CmErr::InitDataserverNodesTooFew);
+  EXPECT_FALSE(cm_service_ptr_->IsRunning());
+
+  FLAGS_cm_cluster_init_grace_period_inSecs = old_grace;
+  FLAGS_dataserver_min_num = old_min_ds;
 }
 
 TEST_F(ClusterManagerServiceTest, TestQueryRoutingTableInfoRPCs) {
@@ -91,10 +114,10 @@ TEST_F(ClusterManagerServiceTest, TestQueryRoutingTableInfoRPCs) {
   auto server_thread = [&]() {
     auto ret = cm_service_ptr_->Init();
     EXPECT_EQ(ret, CommonErr::OK);
-    //FIXME(ytji) : for no dataserver sends hand-shake RPC to cm, so it will start failed
-    //ret = cm_service_ptr_->Start();
-    //EXPECT_EQ(ret, CommonErr::OK);
-    //EXPECT_TRUE(cm_service_ptr_->IsRunning());
+    // FIXME(ytji) : for no dataserver sends hand-shake RPC to cm, so it will start failed
+    // ret = cm_service_ptr_->Start();
+    // EXPECT_EQ(ret, CommonErr::OK);
+    // EXPECT_TRUE(cm_service_ptr_->IsRunning());
     ret = cm_service_ptr_->StartRPCServices();
     EXPECT_EQ(ret, CommonErr::OK);
 
@@ -125,10 +148,10 @@ TEST_F(ClusterManagerServiceTest, TestQueryRoutingTableInfoRPCs) {
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 
-    //FIXME(ytji) : for no dataserver sends hand-shake RPC to cm, it doesn't start, so
-    // stop action will always fail
-    //ret = cm_service_ptr_->Stop();
-    //EXPECT_EQ(ret, CommonErr::OK);
+    // FIXME(ytji) : for no dataserver sends hand-shake RPC to cm, it doesn't start, so
+    //  stop action will always fail
+    // ret = cm_service_ptr_->Stop();
+    // EXPECT_EQ(ret, CommonErr::OK);
     ret = cm_service_ptr_->StopRPCServices();
     EXPECT_EQ(ret, CommonErr::OK);
 
@@ -142,10 +165,10 @@ TEST_F(ClusterManagerServiceTest, TestQueryRoutingTableInfoRPCs) {
     }
 
     // create sirpc object as rpc client
-    sicl::rpc::SiRPC* sirpc_client;
+    sicl::rpc::SiRPC *sirpc_client;
     sicl::rpc::SiRPC::newInstance(sirpc_client, false);
 
-    sicl::rpc::RpcContext* ctx_p = nullptr;
+    sicl::rpc::RpcContext *ctx_p = nullptr;
     sicl::rpc::RpcContext::newInstance(ctx_p);
     std::shared_ptr<sicl::rpc::RpcContext> ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
     ctx->set_timeout(sicl::transport::TimerTick::TIMER_1S);
@@ -154,10 +177,10 @@ TEST_F(ClusterManagerServiceTest, TestQueryRoutingTableInfoRPCs) {
     QueryShardRoutingTableSingleRequestPB single_query_req;
     auto single_query_res_found = new QueryShardRoutingTableSingleResponsePB();
     single_query_req.set_shard_id(0);  // query shard 0
-    auto done_cb_ok = [&single_query_res_found, &done_latch](const google::protobuf::Message* rsp,
+    auto done_cb_ok = [&single_query_res_found, &done_latch](const google::protobuf::Message *rsp,
                                                              const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
       ASSERT_TRUE(ctx->ErrorCode() == sicl::transport::Result::SICL_SUCCESS);
-      auto response = dynamic_cast<const QueryShardRoutingTableSingleResponsePB*>(rsp);
+      auto response = dynamic_cast<const QueryShardRoutingTableSingleResponsePB *>(rsp);
       EXPECT_EQ(response->ret_code(), CommonErr::OK);
       EXPECT_EQ(response->shard_info_size(), 1);
       EXPECT_EQ(response->shard_info(0).shard_ids_size(), 1);
@@ -182,10 +205,10 @@ TEST_F(ClusterManagerServiceTest, TestQueryRoutingTableInfoRPCs) {
 
     single_query_req.set_shard_id(FLAGS_shard_total_num);
     auto single_query_res_nfound = new QueryShardRoutingTableSingleResponsePB();
-    auto done_cb_not_found = [&single_query_res_nfound, &done_latch](const google::protobuf::Message* rsp,
+    auto done_cb_not_found = [&single_query_res_nfound, &done_latch](const google::protobuf::Message *rsp,
                                                                      const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
       ASSERT_TRUE(ctx->ErrorCode() == sicl::transport::Result::SICL_SUCCESS);
-      auto response = dynamic_cast<const QueryShardRoutingTableSingleResponsePB*>(rsp);
+      auto response = dynamic_cast<const QueryShardRoutingTableSingleResponsePB *>(rsp);
       EXPECT_EQ(response->ret_code(), CommonErr::CmTargetShardIdNotFound);
       EXPECT_TRUE(response->shard_info().empty());
       // clean up response object
@@ -216,10 +239,10 @@ TEST_F(ClusterManagerServiceTest, TestQueryRoutingTableInfoRPCs) {
     QueryShardRoutingTableBatchRequestPB batch_query_req;
     auto batch_query_res = new QueryShardRoutingTableBatchResponsePB();
     batch_query_req.mutable_shard_ids()->Add(target_shards_vec.begin(), target_shards_vec.end());
-    auto done_cb_batch = [&batch_query_res, &done_latch](const google::protobuf::Message* rsp,
+    auto done_cb_batch = [&batch_query_res, &done_latch](const google::protobuf::Message *rsp,
                                                          const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
       ASSERT_TRUE(ctx->ErrorCode() == sicl::transport::Result::SICL_SUCCESS);
-      auto response = dynamic_cast<const QueryShardRoutingTableBatchResponsePB*>(rsp);
+      auto response = dynamic_cast<const QueryShardRoutingTableBatchResponsePB *>(rsp);
       EXPECT_EQ(response->ret_code(), CommonErr::OK);
       EXPECT_EQ(response->shard_info_size(), 8);  // all 8 dataservers foud
       for (uint32_t i = 0; i < kDataserverNum; ++i) {
@@ -277,10 +300,10 @@ TEST_F(ClusterManagerServiceTest, TestQueryRoutingTableInfoRPCs) {
 
     QueryShardRoutingTableAllRequestPB all_query_req;
     auto all_query_res = new QueryShardRoutingTableAllResponsePB();
-    auto done_cb_all = [&all_query_res, &done_latch](const google::protobuf::Message* rsp,
+    auto done_cb_all = [&all_query_res, &done_latch](const google::protobuf::Message *rsp,
                                                      const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
       EXPECT_TRUE(ctx->ErrorCode() == sicl::transport::Result::SICL_SUCCESS);
-      auto response = dynamic_cast<const QueryShardRoutingTableAllResponsePB*>(rsp);
+      auto response = dynamic_cast<const QueryShardRoutingTableAllResponsePB *>(rsp);
       EXPECT_EQ(response->ret_code(), CommonErr::OK);
       // FIXME(ytji) : fix below checks
       // EXPECT_EQ(response->shard_info_size(), 8); // all 8 dataservers foud
@@ -323,6 +346,210 @@ TEST_F(ClusterManagerServiceTest, TestQueryRoutingTableInfoRPCs) {
   executor.join();
 }
 
+TEST_F(ClusterManagerServiceTest, TestQueryRoutingTableRejectsRequestsDuringGracePeriod) {
+  auto old_grace = FLAGS_cm_cluster_init_grace_period_inSecs;
+  auto restore = folly::makeGuard([&]() {
+    FLAGS_cm_cluster_init_grace_period_inSecs = old_grace;
+    simm::common::ModuleServiceState::GetInstance().MarkServiceReady();
+  });
+  FLAGS_cm_cluster_init_grace_period_inSecs = 5;
+
+  ASSERT_EQ(cm_service_ptr_->Init(), CommonErr::OK);
+  simm::common::ModuleServiceState::GetInstance().Reset(FLAGS_cm_cluster_init_grace_period_inSecs);
+  ASSERT_EQ(cm_service_ptr_->StartRPCServices(), CommonErr::OK);
+  auto stop_rpc = folly::makeGuard([&]() { EXPECT_EQ(cm_service_ptr_->StopRPCServices(), CommonErr::OK); });
+
+  sicl::rpc::SiRPC *sirpc_client = nullptr;
+  ASSERT_EQ(sicl::rpc::SiRPC::newInstance(sirpc_client, false), sicl::transport::Result::SICL_SUCCESS);
+  auto client = std::unique_ptr<sicl::rpc::SiRPC>(sirpc_client);
+
+  std::latch done_latch(4);
+
+  auto make_ctx = []() {
+    sicl::rpc::RpcContext *ctx_p = nullptr;
+    sicl::rpc::RpcContext::newInstance(ctx_p);
+    auto ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
+    ctx->set_timeout(sicl::transport::TimerTick::TIMER_1S);
+    return ctx;
+  };
+
+  QueryShardRoutingTableSingleRequestPB single_req;
+  single_req.set_shard_id(0);
+  auto *single_rsp = new QueryShardRoutingTableSingleResponsePB();
+  client->SendRequest("127.0.0.1",
+                      FLAGS_cm_rpc_inter_port,
+                      static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_ROUTING_TABLE_QUERY_SINGLE),
+                      single_req,
+                      single_rsp,
+                      make_ctx(),
+                      [&done_latch, single_rsp](const google::protobuf::Message *rsp,
+                                                const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+                        EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
+                        auto response = dynamic_cast<const QueryShardRoutingTableSingleResponsePB *>(rsp);
+                        ASSERT_NE(response, nullptr);
+                        EXPECT_EQ(response->ret_code(), CmErr::InitInGracePeriod);
+                        delete single_rsp;
+                        done_latch.count_down();
+                      });
+
+  QueryShardRoutingTableBatchRequestPB batch_req;
+  batch_req.add_shard_ids(0);
+  batch_req.add_shard_ids(1);
+  auto *batch_rsp = new QueryShardRoutingTableBatchResponsePB();
+  client->SendRequest(
+      "127.0.0.1",
+      FLAGS_cm_rpc_inter_port,
+      static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_ROUTING_TABLE_QUERY_BATCH),
+      batch_req,
+      batch_rsp,
+      make_ctx(),
+      [&done_latch, batch_rsp](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+        EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
+        auto response = dynamic_cast<const QueryShardRoutingTableBatchResponsePB *>(rsp);
+        ASSERT_NE(response, nullptr);
+        EXPECT_EQ(response->ret_code(), CmErr::InitInGracePeriod);
+        delete batch_rsp;
+        done_latch.count_down();
+      });
+
+  QueryShardRoutingTableAllRequestPB all_req;
+  auto *all_rsp = new QueryShardRoutingTableAllResponsePB();
+  client->SendRequest(
+      "127.0.0.1",
+      FLAGS_cm_rpc_inter_port,
+      static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_ROUTING_TABLE_QUERY_ALL),
+      all_req,
+      all_rsp,
+      make_ctx(),
+      [&done_latch, all_rsp](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+        EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
+        auto response = dynamic_cast<const QueryShardRoutingTableAllResponsePB *>(rsp);
+        ASSERT_NE(response, nullptr);
+        EXPECT_EQ(response->ret_code(), CmErr::InitInGracePeriod);
+        delete all_rsp;
+        done_latch.count_down();
+      });
+
+  ListNodesRequestPB list_req;
+  auto *list_rsp = new ListNodesResponsePB();
+  client->SendRequest(
+      "127.0.0.1",
+      FLAGS_cm_rpc_admin_port,
+      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_NODE_REQ),
+      list_req,
+      list_rsp,
+      make_ctx(),
+      [&done_latch, list_rsp](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+        EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
+        auto response = dynamic_cast<const ListNodesResponsePB *>(rsp);
+        ASSERT_NE(response, nullptr);
+        EXPECT_EQ(response->ret_code(), CmErr::InitInGracePeriod);
+        delete list_rsp;
+        done_latch.count_down();
+      });
+
+  done_latch.wait();
+}
+
+TEST_F(ClusterManagerServiceTest, TestQueryRoutingTableReturnsIncompleteWhenShardUnavailable) {
+  auto old_min_ds = FLAGS_dataserver_min_num;
+  auto restore = folly::makeGuard([&]() {
+    FLAGS_dataserver_min_num = old_min_ds;
+    simm::common::ModuleServiceState::GetInstance().MarkServiceReady();
+  });
+  FLAGS_dataserver_min_num = 3;
+
+  ASSERT_EQ(cm_service_ptr_->Init(), CommonErr::OK);
+  simm::common::ModuleServiceState::GetInstance().MarkServiceReady();
+  ASSERT_EQ(cm_service_ptr_->StartRPCServices(), CommonErr::OK);
+  auto stop_rpc = folly::makeGuard([&]() { EXPECT_EQ(cm_service_ptr_->StopRPCServices(), CommonErr::OK); });
+
+  std::vector<std::shared_ptr<simm::common::NodeAddress>> all_servers;
+  for (uint32_t i = 0; i < 3; ++i) {
+    all_servers.push_back(std::make_shared<simm::common::NodeAddress>("192.168.2." + std::to_string(i + 1), 43000 + i));
+  }
+  ASSERT_EQ(cm_service_ptr_->shard_manager_->InitShardRoutingTable(all_servers), CommonErr::OK);
+  ASSERT_EQ(cm_service_ptr_->shard_manager_->RebalanceShardsAfterNodeFailure({all_servers[0]->toString()},
+                                                                             {all_servers[1], all_servers[2]}),
+            CmErr::InsufficientDataservers);
+
+  sicl::rpc::SiRPC *sirpc_client = nullptr;
+  ASSERT_EQ(sicl::rpc::SiRPC::newInstance(sirpc_client, false), sicl::transport::Result::SICL_SUCCESS);
+  auto client = std::unique_ptr<sicl::rpc::SiRPC>(sirpc_client);
+
+  std::latch done_latch(3);
+
+  auto make_ctx = []() {
+    sicl::rpc::RpcContext *ctx_p = nullptr;
+    sicl::rpc::RpcContext::newInstance(ctx_p);
+    auto ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
+    ctx->set_timeout(sicl::transport::TimerTick::TIMER_1S);
+    return ctx;
+  };
+
+  QueryShardRoutingTableSingleRequestPB single_req;
+  single_req.set_shard_id(0);
+  auto *single_rsp = new QueryShardRoutingTableSingleResponsePB();
+  client->SendRequest("127.0.0.1",
+                      FLAGS_cm_rpc_inter_port,
+                      static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_ROUTING_TABLE_QUERY_SINGLE),
+                      single_req,
+                      single_rsp,
+                      make_ctx(),
+                      [&done_latch, single_rsp](const google::protobuf::Message *rsp,
+                                                const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+                        EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
+                        auto response = dynamic_cast<const QueryShardRoutingTableSingleResponsePB *>(rsp);
+                        ASSERT_NE(response, nullptr);
+                        EXPECT_EQ(response->ret_code(), CommonErr::CmRoutingInfoNotComplete);
+                        EXPECT_EQ(response->shard_info_size(), 0);
+                        delete single_rsp;
+                        done_latch.count_down();
+                      });
+
+  QueryShardRoutingTableBatchRequestPB batch_req;
+  batch_req.add_shard_ids(0);
+  batch_req.add_shard_ids(1);
+  auto *batch_rsp = new QueryShardRoutingTableBatchResponsePB();
+  client->SendRequest(
+      "127.0.0.1",
+      FLAGS_cm_rpc_inter_port,
+      static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_ROUTING_TABLE_QUERY_BATCH),
+      batch_req,
+      batch_rsp,
+      make_ctx(),
+      [&done_latch, batch_rsp](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+        EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
+        auto response = dynamic_cast<const QueryShardRoutingTableBatchResponsePB *>(rsp);
+        ASSERT_NE(response, nullptr);
+        EXPECT_EQ(response->ret_code(), CommonErr::CmRoutingInfoNotComplete);
+        EXPECT_GE(response->shard_info_size(), 1);
+        delete batch_rsp;
+        done_latch.count_down();
+      });
+
+  QueryShardRoutingTableAllRequestPB all_req;
+  auto *all_rsp = new QueryShardRoutingTableAllResponsePB();
+  client->SendRequest(
+      "127.0.0.1",
+      FLAGS_cm_rpc_inter_port,
+      static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_ROUTING_TABLE_QUERY_ALL),
+      all_req,
+      all_rsp,
+      make_ctx(),
+      [&done_latch, all_rsp](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+        EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
+        auto response = dynamic_cast<const QueryShardRoutingTableAllResponsePB *>(rsp);
+        ASSERT_NE(response, nullptr);
+        EXPECT_EQ(response->ret_code(), CommonErr::CmRoutingInfoNotComplete);
+        EXPECT_GT(response->shard_info_size(), 0);
+        delete all_rsp;
+        done_latch.count_down();
+      });
+
+  done_latch.wait();
+}
+
 TEST_F(ClusterManagerServiceTest, TestNewNodeHandShakeRPC) {
   std::atomic<bool> serverStarted{false};
   std::atomic<bool> stopServer{false};
@@ -340,8 +567,8 @@ TEST_F(ClusterManagerServiceTest, TestNewNodeHandShakeRPC) {
     auto shard_manager_ptr = std::make_shared<simm::cm::ClusterManagerShardManager>();
     auto node_manager_ptr = std::make_shared<simm::cm::ClusterManagerNodeManager>();
     auto hb_monitor_ptr = std::make_shared<simm::cm::ClusterManagerHBMonitor>(node_manager_ptr, shard_manager_ptr);
-    auto cm_service_ptr = std::make_unique<simm::cm::ClusterManagerService>(
-      shard_manager_ptr, node_manager_ptr, hb_monitor_ptr);
+    auto cm_service_ptr =
+        std::make_unique<simm::cm::ClusterManagerService>(shard_manager_ptr, node_manager_ptr, hb_monitor_ptr);
     auto ret = cm_service_ptr->Init();
     EXPECT_EQ(ret, CommonErr::OK);
     ret = cm_service_ptr->Start();
@@ -357,11 +584,11 @@ TEST_F(ClusterManagerServiceTest, TestNewNodeHandShakeRPC) {
 
     // test checks
     shard_id_t steps = static_cast<shard_id_t>(FLAGS_shard_total_num / kDataserverNum);
-    shard_id_t rests = static_cast<shard_id_t>(FLAGS_shard_total_num - steps * (kDataserverNum - 1));
+    shard_id_t remainder = static_cast<shard_id_t>(FLAGS_shard_total_num % kDataserverNum);
     auto all_servers_vec = node_manager_ptr->GetAllNodeAddress();
     EXPECT_EQ(all_servers_vec.size(), kDataserverNum);
     std::unordered_set<std::string> ds_set;
-    for (const auto & ptr : all_servers_vec) {
+    for (const auto &ptr : all_servers_vec) {
       ds_set.insert(ptr->toString());
     }
     EXPECT_EQ(ds_set.size(), kDataserverNum);
@@ -376,16 +603,24 @@ TEST_F(ClusterManagerServiceTest, TestNewNodeHandShakeRPC) {
       EXPECT_EQ(st, NodeStatus::RUNNING);
     }
     auto query_res = shard_manager_ptr->QueryAllShardRoutingInfos();
-    for (const auto & entry : query_res) {
+    for (const auto &entry : query_res) {
       std::string ds_addr_str = entry.second->toString();
       auto it = ds_set.find(ds_addr_str);
       EXPECT_TRUE(it != ds_set.end());
       converted_routing_map[ds_addr_str]++;
     }
-    for (const auto & entry : converted_routing_map) {
-      EXPECT_TRUE(entry.second == steps || entry.second == rests);
+    EXPECT_EQ(converted_routing_map.size(), kDataserverNum);
+    for (const auto &entry : converted_routing_map) {
+      EXPECT_TRUE(entry.second == steps || entry.second == steps + 1);
       MLOG_INFO("DS({}), holds ({}) shards", entry.first, entry.second);
     }
+    uint32_t nodes_with_extra_shard = 0;
+    for (const auto &entry : converted_routing_map) {
+      if (entry.second == steps + 1) {
+        ++nodes_with_extra_shard;
+      }
+    }
+    EXPECT_EQ(nodes_with_extra_shard, remainder);
 
     MLOG_INFO("Server thread start to stop!");
     ret = cm_service_ptr->Stop();
@@ -401,8 +636,8 @@ TEST_F(ClusterManagerServiceTest, TestNewNodeHandShakeRPC) {
   };
 
   auto client_thread = [&]() {
-    //while (!serverStarted.load()) {
-    // just hang 1 second to wait for RPC service ready of cm service
+    // while (!serverStarted.load()) {
+    //  just hang 1 second to wait for RPC service ready of cm service
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     //}
 
@@ -413,12 +648,12 @@ TEST_F(ClusterManagerServiceTest, TestNewNodeHandShakeRPC) {
       std::string server_addr_str = ip_addr_prefix + std::to_string(thread_num);
 
       // create sirpc object as rpc client
-      sicl::rpc::SiRPC* sirpc_client;
+      sicl::rpc::SiRPC *sirpc_client;
       sicl::rpc::SiRPC::newInstance(sirpc_client, false);
-      sicl::rpc::RpcContext* ctx_p = nullptr;
+      sicl::rpc::RpcContext *ctx_p = nullptr;
       sicl::rpc::RpcContext::newInstance(ctx_p);
       std::shared_ptr<sicl::rpc::RpcContext> ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
-      //FIXME(ytji): URGENT! - 100 servers under 1s timeout will make rpc timeout issue occasionally
+      // FIXME(ytji): URGENT! - 100 servers under 1s timeout will make rpc timeout issue occasionally
       ctx->set_timeout(sicl::transport::TimerTick::TIMER_3S);
 
       // send handshake rpc to cm to join into the cluster
@@ -427,10 +662,9 @@ TEST_F(ClusterManagerServiceTest, TestNewNodeHandShakeRPC) {
       auto node_field = hs_req.mutable_node();
       node_field->set_ip(server_addr_str);
       node_field->set_port(server_port);
-      auto hs_done_cb_ok = [&](const google::protobuf::Message* rsp,
-                                         const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+      auto hs_done_cb_ok = [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
         EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
-        auto response = dynamic_cast<const NewNodeHandShakeResponsePB*>(rsp);
+        auto response = dynamic_cast<const NewNodeHandShakeResponsePB *>(rsp);
         EXPECT_EQ(response->ret_code(), CommonErr::OK);
         // clean up response object
         // delete hs_resp;
@@ -451,9 +685,7 @@ TEST_F(ClusterManagerServiceTest, TestNewNodeHandShakeRPC) {
     };
 
     for (uint32_t i = 0; i < kDataserverNum; ++i) {
-      executor.add([i, &client_sub_thread]() {
-        client_sub_thread(i);
-      });
+      executor.add([i, &client_sub_thread]() { client_sub_thread(i); });
       MLOG_INFO("client_sub_thread-{} added!", i);
     }
 
@@ -550,7 +782,7 @@ TEST_F(ClusterManagerServiceTest, TestNodeRejoinRPC) {
 }  // namespace cm
 }  // namespace simm
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();

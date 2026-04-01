@@ -2,11 +2,11 @@
 #include <memory>
 #include <ranges>
 
+#include <boost/algorithm/string/join.hpp>
 #include "cm_shard_manager.h"
 #include "common/base/assert.h"
 #include "common/logging/logging.h"
 #include "folly/Likely.h"
-#include <boost/algorithm/string/join.hpp>
 
 DECLARE_LOG_MODULE("cluster_manager");
 
@@ -134,25 +134,18 @@ error_code_t ClusterManagerShardManager::InitShardRoutingTable(
 }
 
 error_code_t ClusterManagerShardManager::RebalanceShardsAfterNodeFailure(
-    const std::vector<std::string>& dead_node_addresses,
-    const std::vector<std::shared_ptr<simm::common::NodeAddress>>& alive_servers) {
-  MLOG_DEBUG("Starting shard rebalance after node failure, dead nodes: {}", boost::algorithm::join(dead_node_addresses, ", "));
-
-  if (FOLLY_UNLIKELY(alive_servers.empty())) {
-    return CmErr::NoAvailableDataservers;
-  }
-  
-  if (FOLLY_UNLIKELY(alive_servers.size() < FLAGS_dataserver_min_num)) {
-    return CmErr::InsufficientDataservers;
-  }
+    const std::vector<std::string> &dead_node_addresses,
+    const std::vector<std::shared_ptr<simm::common::NodeAddress>> &alive_servers) {
+  MLOG_DEBUG("Starting shard rebalance after node failure, dead nodes: {}",
+             boost::algorithm::join(dead_node_addresses, ", "));
 
   // Find all orphaned shards from dead nodes
   // TODO(zbhe): change data structure for faster lookup / backlink
   std::vector<shard_id_t> orphaned_shards;
-  for (const auto& entry : mShardRoutingTable) {
+  for (const auto &entry : mShardRoutingTable) {
     if (entry.second) {
       std::string node_addr = entry.second->node_ip_ + ":" + std::to_string(entry.second->node_port_);
-      for (const auto& dead_addr : dead_node_addresses) {
+      for (const auto &dead_addr : dead_node_addresses) {
         if (node_addr == dead_addr) {
           orphaned_shards.push_back(entry.first);
           break;
@@ -160,8 +153,22 @@ error_code_t ClusterManagerShardManager::RebalanceShardsAfterNodeFailure(
       }
     }
   }
-  
+
   MLOG_DEBUG("Found {} orphaned shards from dead nodes", orphaned_shards.size());
+
+  if (orphaned_shards.empty()) {
+    return CommonErr::OK;
+  }
+
+  if (FOLLY_UNLIKELY(alive_servers.empty())) {
+    (void)MarkShardsUnavailableForNodes(dead_node_addresses);
+    return CmErr::NoAvailableDataservers;
+  }
+
+  if (FOLLY_UNLIKELY(alive_servers.size() < FLAGS_dataserver_min_num)) {
+    (void)MarkShardsUnavailableForNodes(dead_node_addresses);
+    return CmErr::InsufficientDataservers;
+  }
 
   // Reassign
   return ReassignOrphanedShards(orphaned_shards, alive_servers);
@@ -169,48 +176,75 @@ error_code_t ClusterManagerShardManager::RebalanceShardsAfterNodeFailure(
 
 // TODO(zbhe): reuse logic for init and rebalance
 error_code_t ClusterManagerShardManager::ReassignOrphanedShards(
-    const std::vector<shard_id_t>& orphaned_shards,
-    const std::vector<std::shared_ptr<simm::common::NodeAddress>>& alive_servers) {
-  
+    const std::vector<shard_id_t> &orphaned_shards,
+    const std::vector<std::shared_ptr<simm::common::NodeAddress>> &alive_servers) {
   if (orphaned_shards.empty() || alive_servers.empty()) {
     return CommonErr::OK;
   }
-  
+
   // Current: Reassign based on average distribution
   size_t server_count = alive_servers.size();
   size_t shards_per_server = orphaned_shards.size() / server_count;
   size_t remaining_shards = orphaned_shards.size() % server_count;
-  
+
   std::vector<shard_id_t> target_shards;
   std::vector<std::shared_ptr<simm::common::NodeAddress>> target_servers;
-  
+
   size_t shard_index = 0;
   for (size_t server_idx = 0; server_idx < server_count && shard_index < orphaned_shards.size(); ++server_idx) {
     size_t shards_for_this_server = shards_per_server + (server_idx < remaining_shards ? 1 : 0);
-    
+
     for (size_t i = 0; i < shards_for_this_server && shard_index < orphaned_shards.size(); ++i) {
       target_shards.push_back(orphaned_shards[shard_index]);
       target_servers.push_back(alive_servers[server_idx]);
-      
-      MLOG_DEBUG("Planning to reassign shard {} to server {}:{}", 
-                 orphaned_shards[shard_index], 
-                 alive_servers[server_idx]->node_ip_, 
+
+      MLOG_DEBUG("Planning to reassign shard {} to server {}:{}",
+                 orphaned_shards[shard_index],
+                 alive_servers[server_idx]->node_ip_,
                  alive_servers[server_idx]->node_port_);
-      
+
       shard_index++;
     }
   }
-  
-  error_code_t ret = BatchModifyRoutingTable(target_shards, target_servers); // TODO: migrate with szzhao
+
+  error_code_t ret = BatchModifyRoutingTable(target_shards, target_servers);  // TODO: migrate with szzhao
   if (ret != CommonErr::OK) {
     MLOG_ERROR("Failed to batch modify routing table during rebalance, ret: {}", ret);
     return ret;
   }
-  
-  MLOG_DEBUG("Redistributed {} shards to {} alive servers", 
-            target_shards.size(), server_count);
-  
+
+  MLOG_DEBUG("Redistributed {} shards to {} alive servers", target_shards.size(), server_count);
+
   return CommonErr::OK;
+}
+
+error_code_t ClusterManagerShardManager::MarkShardsUnavailableForNodes(
+    const std::vector<std::string> &target_node_addresses) {
+  if (target_node_addresses.empty()) {
+    return CommonErr::OK;
+  }
+
+  std::vector<shard_id_t> target_shards;
+  std::vector<std::shared_ptr<simm::common::NodeAddress>> target_servers;
+  for (const auto &entry : mShardRoutingTable) {
+    if (!entry.second) {
+      continue;
+    }
+    const auto node_addr = entry.second->toString();
+    for (const auto &target_node : target_node_addresses) {
+      if (node_addr == target_node) {
+        target_shards.push_back(entry.first);
+        target_servers.push_back(nullptr);
+        break;
+      }
+    }
+  }
+
+  if (target_shards.empty()) {
+    return CommonErr::OK;
+  }
+
+  return BatchModifyRoutingTable(target_shards, target_servers);
 }
 
 // TODO(ytji): update args type and implement this function

@@ -1,16 +1,16 @@
+#include <exception>
 #include <string>
 #include <string_view>
-#include <exception>
 
 #include <gflags/gflags.h>
 
-#include "common/logging/logging.h"
-#include "common/rpc_handlers/common_rpc_handlers.h"
-#include "proto/common.pb.h"
-#include "proto/cm_clnt_rpcs.pb.h"
-#include "proto/ds_cm_rpcs.pb.h"
 #include "cm_rpc_handler.h"
 #include "cm_service.h"
+#include "common/logging/logging.h"
+#include "common/rpc_handlers/common_rpc_handlers.h"
+#include "proto/cm_clnt_rpcs.pb.h"
+#include "proto/common.pb.h"
+#include "proto/ds_cm_rpcs.pb.h"
 
 DECLARE_int32(cm_rpc_intra_port);
 DECLARE_int32(cm_rpc_inter_port);
@@ -39,7 +39,7 @@ error_code_t ClusterManagerService::Start() {
     error_code_t ret = StartRPCServices();
     if (ret != CommonErr::OK) {
       MLOG_ERROR("Failed to Start RPC services, ret:{}", ret);
-      is_running_.store(false); // revert state
+      is_running_.store(false);  // revert state
       return ret;
     }
 
@@ -47,13 +47,14 @@ error_code_t ClusterManagerService::Start() {
     std::this_thread::sleep_for(std::chrono::seconds(FLAGS_cm_cluster_init_grace_period_inSecs));
 
     auto registered_dataservers_vec = node_manager_->GetAllNodeAddress(/* alive = true */);
-    for (const auto & ds_entry : registered_dataservers_vec) {
+    for (const auto &ds_entry : registered_dataservers_vec) {
       MLOG_INFO("DS({}:{}) joined into cluster", ds_entry->node_ip_, ds_entry->node_port_);
     }
     ret = shard_manager_->InitShardRoutingTable(registered_dataservers_vec);
     if (ret != CommonErr::OK) {
       MLOG_ERROR("Failed to init global shard routing table, ret:{}", ret);
-      is_running_.store(false); // revert state
+      StopRPCServices();
+      is_running_.store(false);  // revert state
       return ret;
     }
 
@@ -66,7 +67,7 @@ error_code_t ClusterManagerService::Start() {
     // start dataservers resource query background thread
     // FIXME(ytji): for v0930 version, background thread(to query resource stats from ds) in
     // node manager module is not actived yet, so just comment init action
-    //node_manager_->Init();
+    // node_manager_->Init();
 
     MLOG_INFO("ClusterManager service starts successfully!");
   } else {
@@ -85,7 +86,7 @@ error_code_t ClusterManagerService::Stop() {
     error_code_t ret = StopRPCServices();
     if (ret != CommonErr::OK) {
       MLOG_ERROR("Failed to Stop RPC services, ret:{}", ret);
-      is_running_.store(true); // revert state
+      is_running_.store(true);  // revert state
       return ret;
     }
 
@@ -97,7 +98,7 @@ error_code_t ClusterManagerService::Stop() {
     // stop node manager background thread
     // FIXME(ytji): for v0930 version, background thread(to query resource stats from ds) in
     // node manager module is not actived yet, so just comment stop action
-    //node_manager_->Stop();
+    // node_manager_->Stop();
 
     MLOG_INFO("Cluster Manager service stopped successfully...");
   } else {
@@ -132,17 +133,20 @@ error_code_t ClusterManagerService::StartRPCServices() {
   }
   if (auto res = create_and_start_rpc_fn(inter_rpc_service_, FLAGS_cm_rpc_inter_port, FLAGS_cm_rpc_inter_name);
       res != sicl::transport::SICL_SUCCESS) {
+    StopRPCServices();
     return CmErr::InitInterRPCServiceFailed;
   }
   if (auto res = create_and_start_rpc_fn(admin_rpc_service_, FLAGS_cm_rpc_admin_port, FLAGS_cm_rpc_admin_name);
       res != sicl::transport::SICL_SUCCESS) {
+    StopRPCServices();
     return CmErr::InitAdminRPCServiceFailed;
   }
 
   // Register handlers for in-cluster RPC requests
   inter_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_NEW_NODE_HANDSHAKE),
-      new NewNodeHandshakeHandler(inter_rpc_service_.get(), new NewNodeHandShakeRequestPB, node_manager_, shard_manager_));
+      new NewNodeHandshakeHandler(
+          inter_rpc_service_.get(), new NewNodeHandShakeRequestPB, node_manager_, shard_manager_));
   inter_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_NODE_HEARTBEAT),
       new NodeHeartBeatHandler(inter_rpc_service_.get(), new DataServerHeartBeatRequestPB, hb_monitor_));
@@ -164,31 +168,29 @@ error_code_t ClusterManagerService::StartRPCServices() {
           inter_rpc_service_.get(), new QueryShardRoutingTableBatchRequestPB, shard_manager_));
   inter_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_ROUTING_TABLE_QUERY_ALL),
-      new RoutingTableQueryAllHandler(inter_rpc_service_.get(), new QueryShardRoutingTableAllRequestPB, shard_manager_));
+      new RoutingTableQueryAllHandler(
+          inter_rpc_service_.get(), new QueryShardRoutingTableAllRequestPB, shard_manager_));
 
   // Register handlers for admin RPC requests
   admin_rpc_service_->RegisterHandler(
-    static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_GET_GFLAG_REQ),
-    new simm::common::GetGFlagHandler(admin_rpc_service_.get(), new proto::common::GetGFlagValueRequestPB));
+      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_GET_GFLAG_REQ),
+      new simm::common::GetGFlagHandler(admin_rpc_service_.get(), new proto::common::GetGFlagValueRequestPB));
   admin_rpc_service_->RegisterHandler(
-    static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_SET_GFLAG_REQ),
-    new simm::common::SetGFlagHandler(admin_rpc_service_.get(), new proto::common::SetGFlagValueRequestPB));
+      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_SET_GFLAG_REQ),
+      new simm::common::SetGFlagHandler(admin_rpc_service_.get(), new proto::common::SetGFlagValueRequestPB));
   admin_rpc_service_->RegisterHandler(
-    static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_GFLAGS_REQ),
-    new simm::common::ListGFlagsHandler(admin_rpc_service_.get(), new proto::common::ListAllGFlagsRequestPB));
+      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_GFLAGS_REQ),
+      new simm::common::ListGFlagsHandler(admin_rpc_service_.get(), new proto::common::ListAllGFlagsRequestPB));
   admin_rpc_service_->RegisterHandler(
-    static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_SHARD_REQ),
-    new RoutingTableQueryAllHandler(
-        admin_rpc_service_.get(), new QueryShardRoutingTableAllRequestPB, shard_manager_)
-  );
+      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_SHARD_REQ),
+      new RoutingTableQueryAllHandler(
+          admin_rpc_service_.get(), new QueryShardRoutingTableAllRequestPB, shard_manager_));
   admin_rpc_service_->RegisterHandler(
-    static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_NODE_REQ),
-    new ListNodesHandler(admin_rpc_service_.get(), new ListNodesRequestPB, node_manager_)
-  );
+      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_NODE_REQ),
+      new ListNodesHandler(admin_rpc_service_.get(), new ListNodesRequestPB, node_manager_));
   admin_rpc_service_->RegisterHandler(
-    static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_SET_NODE_STATUS_REQ),
-    new SetNodeStatusHandler(admin_rpc_service_.get(), new SetNodeStatusRequestPB, node_manager_)
-  );
+      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_SET_NODE_STATUS_REQ),
+      new SetNodeStatusHandler(admin_rpc_service_.get(), new SetNodeStatusRequestPB, node_manager_));
 
   return CommonErr::OK;
 }

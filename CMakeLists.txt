@@ -126,7 +126,18 @@ include_directories(${PROJECT_SOURCE_DIR}/src
                     ${PROJECT_SOURCE_DIR}/third_party/sict/include/
                     )
 
-set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};${PROJECT_SOURCE_DIR}/third_party/fast_float/include/")
+set(SIMM_FASTFLOAT_ROOT "/tmp/simm-fast_float")
+set(SIMM_FASTFLOAT_INCLUDE_DIR "${SIMM_FASTFLOAT_ROOT}/include")
+file(MAKE_DIRECTORY "${SIMM_FASTFLOAT_ROOT}")
+if(NOT EXISTS "${SIMM_FASTFLOAT_INCLUDE_DIR}")
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+                "${PROJECT_SOURCE_DIR}/third_party/fast_float/include"
+                "${SIMM_FASTFLOAT_INCLUDE_DIR}"
+    )
+endif()
+set(FASTFLOAT_INCLUDE_DIR "${SIMM_FASTFLOAT_INCLUDE_DIR}" CACHE PATH "fast_float include path" FORCE)
+set(CMAKE_INCLUDE_PATH "${CMAKE_INCLUDE_PATH};${SIMM_FASTFLOAT_INCLUDE_DIR}")
 
 # set GNU SOURCE to fix folly dependency
 add_compile_definitions(_GNU_SOURCE)
@@ -150,6 +161,7 @@ add_subdirectory(tools)
 if(ENABLE_TESTS)
     message(STATUS "Building tests ...")
     add_compile_definitions(SIMM_UNIT_TEST)
+    include_directories(${PROJECT_SOURCE_DIR}/third_party/gtest/googletest/include)
     add_subdirectory(tests)
 endif()
 
