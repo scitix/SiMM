@@ -1,0 +1,40 @@
+# Complete scenario: kill one DS, verify failure detection + shard rebalance.
+#
+# Usage:
+#   pytest tests/test_scenario.py -k "kill_ds_and_verify_rebalance" -v
+#   or programmatically:
+#     ScenarioRunner().run_scenario("scenarios/full/kill_ds_and_verify_rebalance.yaml")
+
+cluster:
+  shard_total_num: 64
+  cluster_manager:
+    cm_cluster_init_grace_period_inSecs: 5
+    cm_heartbeat_timeout_inSecs: 10
+    cm_heartbeat_bg_scan_interval_inSecs: 2
+  data_servers:
+    count: 3
+    heartbeat_cooldown_sec: 2
+    register_cooldown_sec: 2
+
+faults:
+  - type: sigkill
+    target: "ds:0"
+    delay_after_ready_sec: 2
+
+validations:
+  - type: node_status
+    target: "ds:0"
+    expected: DEAD
+    within_sec: 20   # cm_heartbeat_timeout_inSecs + 2 * cm_heartbeat_bg_scan_interval_inSecs + buffer
+
+  - type: no_orphaned_shards
+    within_sec: 15
+
+  - type: node_has_no_shards
+    target: "ds:0"
+
+  - type: shard_total
+    expected: 64
+
+  - type: shard_balance
+    max_imbalance_ratio: 0.3

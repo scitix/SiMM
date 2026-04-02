@@ -1,0 +1,4 @@
+faults:
+  - type: sigkill
+    target: "ds:0"
+    delay_after_ready_sec: 5

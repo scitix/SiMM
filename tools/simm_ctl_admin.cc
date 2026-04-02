@@ -496,6 +496,48 @@ static void CallbackNode(const std::string &operation,
   done_latch.wait();
 }
 
+static void CallbackDsStatus(const std::string &ip, int port) {
+  // Query DS internal status (is_registered, cm_ready, heartbeat_failure_count)
+  std::latch done_latch(1);
+  std::unique_ptr<sicl::rpc::SiRPC> rpc_client{nullptr};
+  std::shared_ptr<sicl::rpc::RpcContext> ctx_shared;
+  InitRpcClientAndContext(rpc_client, ctx_shared);
+
+  auto done_cb = [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+    if (ctx->Failed()) {
+      std::cerr << "Error: RPC failed, err: " << ctx->ErrorText() << "\n";
+    } else {
+      auto *response = dynamic_cast<const proto::common::DsStatusResponsePB *>(rsp);
+      if (response->ret_code() == CommonErr::OK) {
+        tabulate::Table tbl;
+        tbl.format().locale("C");
+        tbl.add_row({"Field", "Value"});
+        tbl.add_row({"is_registered", response->is_registered() ? "true" : "false"});
+        tbl.add_row({"cm_ready", response->cm_ready() ? "true" : "false"});
+        tbl.add_row({"heartbeat_failure_count", std::to_string(response->heartbeat_failure_count())});
+        tbl.column(0).format().width(28).font_style({tabulate::FontStyle::bold});
+        tbl.column(1).format().width(20);
+        tbl.row(0).format().font_style({tabulate::FontStyle::bold});
+        std::cout << tbl << std::endl;
+      } else {
+        std::cerr << "Error: DsStatus RPC failed with ret_code: " << response->ret_code() << "\n";
+      }
+    }
+    done_latch.count_down();
+  };
+
+  proto::common::DsStatusRequestPB req;
+  auto resp = new proto::common::DsStatusResponsePB();
+  rpc_client->SendRequest(ip,
+                          port,
+                          static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_DS_STATUS_REQ),
+                          req,
+                          resp,
+                          ctx_shared,
+                          done_cb);
+  done_latch.wait();
+}
+
 static void CallbackShard(const std::string &operation,
                           [[maybe_unused]] const std::string &name,
                           [[maybe_unused]] const std::string &value,
@@ -791,6 +833,7 @@ int main(int argc, char *argv[]) {
       std::cout << "SUBCOMMANDS:\n"
                 << "  node list [OPTIONS]           List all nodes\n"
                 << "  node set <IP:PORT> <STATUS>   Set node status (0=DEAD, 1=RUNNING)\n"
+                << "  ds status                     Query data server internal status\n"
                 << "  shard list [OPTIONS]          List all shards\n"
                 << "  gflag list [OPTIONS]          List all gflags\n"
                 << "  gflag get <NAME> [OPTIONS]    Get a gflag value\n"
@@ -826,6 +869,18 @@ int main(int argc, char *argv[]) {
         CallbackNode("set", node_addr, node_status, ip, port, verbose);
       } else {
         std::cerr << "Error: Unknown node operation: " << operation << "\n";
+        return 1;
+      }
+    } else if (subcommand == "ds") {
+      if (args.empty()) {
+        std::cerr << "Error: ds subcommand requires an operation (status)\n";
+        return 1;
+      }
+      operation = args[0];
+      if (operation == "status") {
+        CallbackDsStatus(ip, port);
+      } else {
+        std::cerr << "Error: Unknown ds operation: " << operation << "\n";
         return 1;
       }
     } else if (subcommand == "shard") {

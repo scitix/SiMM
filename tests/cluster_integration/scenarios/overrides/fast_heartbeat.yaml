@@ -1,0 +1,8 @@
+# Override: reduce heartbeat timeouts for faster test execution
+cluster:
+  cluster_manager:
+    cm_heartbeat_timeout_inSecs: 6
+    cm_heartbeat_bg_scan_interval_inSecs: 1
+
+  data_servers:
+    heartbeat_cooldown_sec: 1

@@ -61,3 +61,15 @@ message TraceToggleRequestPB {
 message TraceToggleResponsePB {
   sint32 ret_code = 1;
 }
+
+// DS internal status query (for testing/debugging)
+message DsStatusRequestPB {
+  // empty — query all status fields
+}
+
+message DsStatusResponsePB {
+  sint32 ret_code = 1;
+  bool is_registered = 2;
+  bool cm_ready = 3;
+  uint32 heartbeat_failure_count = 4;
+}

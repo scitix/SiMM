@@ -1,0 +1,16 @@
+cluster:
+  build_mode: release
+  shard_total_num: 64
+
+  cluster_manager:
+    cm_cluster_init_grace_period_inSecs: 5
+    cm_heartbeat_timeout_inSecs: 10
+    cm_heartbeat_bg_scan_interval_inSecs: 2
+
+  data_servers:
+    count: 3
+    heartbeat_cooldown_sec: 2
+    register_cooldown_sec: 2
+    cm_hb_tolerance_count: 5
+    cm_connect_retry_interval_sec: 1
+    memory_limit_bytes: 1073741824  # 1GB

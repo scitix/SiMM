@@ -265,6 +265,14 @@ error_code_t KVRpcService::RegisterHandlers() {
     return DsErr::RegisterRPCHandlerFailed;
   }
 #endif
+  res = admin_rpc_service_->RegisterHandler(
+      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_DS_STATUS_REQ),
+      new DsStatusHandler(this, admin_rpc_service_.get(), new proto::common::DsStatusRequestPB));
+  if (!res) {
+    MLOG_ERROR("RegisterHandler for RPC_DS_STATUS_REQ({}) failed",
+      static_cast<int>(simm::common::CommonRpcType::RPC_DS_STATUS_REQ));
+    return DsErr::RegisterRPCHandlerFailed;
+  }
   return CommonErr::OK;  // Success
 }
 

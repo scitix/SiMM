@@ -1,0 +1,45 @@
+# Scenario: Deferred reshard window timeout → degrade to standard reshard.
+#
+# DS killed, no replacement within window → DEFERRED_RESHARD → DEAD → reshard.
+
+cluster:
+  shard_total_num: 64
+  cluster_manager:
+    cm_cluster_init_grace_period_inSecs: 5
+    cm_heartbeat_timeout_inSecs: 6
+    cm_heartbeat_bg_scan_interval_inSecs: 1
+    cm_deferred_reshard_enabled: true
+    cm_deferred_reshard_window_inSecs: 10
+  data_servers:
+    count: 3
+    heartbeat_cooldown_sec: 2
+    register_cooldown_sec: 2
+    ds_logical_node_id_prefix: "simm-ds"
+
+faults:
+  - type: sigkill
+    target: "ds:0"
+    delay_after_ready_sec: 2
+
+validations:
+  # First: DEFERRED_RESHARD (not immediate DEAD)
+  - type: node_status
+    target: "ds:0"
+    expected: DEFERRED_RESHARD
+    within_sec: 15
+
+  # Then: window expires → DEAD
+  - type: node_status
+    target: "ds:0"
+    expected: DEAD
+    within_sec: 20
+
+  # Standard reshard happens
+  - type: no_orphaned_shards
+    within_sec: 15
+
+  - type: node_has_no_shards
+    target: "ds:0"
+
+  - type: shard_total
+    expected: 64

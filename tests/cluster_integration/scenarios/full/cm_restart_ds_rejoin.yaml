@@ -1,0 +1,31 @@
+# Complete scenario: kill CM, restart, verify all DS re-register.
+
+cluster:
+  shard_total_num: 64
+  cluster_manager:
+    cm_cluster_init_grace_period_inSecs: 5
+    cm_heartbeat_timeout_inSecs: 10
+    cm_heartbeat_bg_scan_interval_inSecs: 2
+  data_servers:
+    count: 3
+    heartbeat_cooldown_sec: 2
+    register_cooldown_sec: 2
+    cm_hb_tolerance_count: 5
+
+faults:
+  - type: restart_cm
+    target: "cm"
+    delay_after_ready_sec: 3
+    # duration_sec: time to wait before restarting CM
+    # (allow DS to detect CM failure: cm_hb_tolerance_count * heartbeat_cooldown_sec)
+    duration_sec: 12
+
+validations:
+  - type: alive_node_count
+    expected: 3
+    within_sec: 30   # cm_cluster_init_grace_period_inSecs + ds_rejoin time
+
+  - type: all_nodes_running
+
+  - type: shard_total
+    expected: 64

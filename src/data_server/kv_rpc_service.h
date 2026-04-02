@@ -124,6 +124,7 @@ class KVRpcService {
   std::deque<std::atomic<size_t>> shard_used_bytes_;
 
   friend class KVCacheEvictor;
+  friend class DsStatusHandler;
 #if defined(SIMM_UNIT_TEST)
   FRIEND_TEST(KVServiceTest, TestClientHandlers);
   FRIEND_TEST(KVServiceLightTest, TestHeartbeatFailureCountResetOnSuccess);
