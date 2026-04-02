@@ -5,9 +5,15 @@
 #include <gtest/gtest.h>
 
 #include "client/clnt_messenger.h"
+#include "data_server/kv_rpc_handler.h"
+#include "proto/ds_clnt_rpcs.pb.h"
 #include "rpc/connection.h"
 #include "rpc/rpc.h"
 #include "rpc/rpc_context.h"
+
+DECLARE_bool(clnt_syncreq_enable_retry);
+DECLARE_uint32(clnt_syncreq_retry_count);
+DECLARE_uint32(shard_total_num);
 
 namespace simm {
 namespace clnt {
@@ -67,6 +73,101 @@ class FakeConnection : public sicl::rpc::Connection {
 
  private:
   std::string name_;
+};
+
+class FakeSiRPC : public sicl::rpc::SiRPC {
+ public:
+  std::shared_ptr<sicl::rpc::Connection> connect(const std::string &, const int) override {
+    connect_calls_.fetch_add(1);
+    if (connect_delay_.count() > 0) {
+      std::this_thread::sleep_for(connect_delay_);
+    }
+    if (connect_handler_) {
+      return connect_handler_();
+    }
+    return std::make_shared<FakeConnection>("fake-connect");
+  }
+
+  std::shared_ptr<sicl::rpc::Connection> connect(const std::string &, const int, const int, const int) override {
+    return nullptr;
+  }
+
+  size_t addConnect(std::shared_ptr<sicl::rpc::Connection>, size_t count) override { return count; }
+
+  void SendRequest(const std::shared_ptr<sicl::rpc::Connection>,
+                   const sicl::rpc::ReqType,
+                   const google::protobuf::Message &,
+                   google::protobuf::Message *rsp,
+                   const std::shared_ptr<sicl::rpc::RpcContext> ctx,
+                   const sicl::rpc::RpcDoneFn done) override {
+    async_send_calls_.fetch_add(1);
+    if (async_send_handler_) {
+      async_send_handler_(ctx);
+    } else {
+      ctx->SetError(sicl::transport::SICL_SUCCESS, "");
+    }
+    done(rsp, ctx);
+  }
+
+  void SendRequest(const std::shared_ptr<sicl::rpc::Connection>,
+                   const sicl::rpc::ReqType,
+                   const google::protobuf::Message &,
+                   google::protobuf::Message *,
+                   const std::shared_ptr<sicl::rpc::RpcContext> ctx) override {
+    sync_send_calls_.fetch_add(1);
+    if (sync_send_handler_) {
+      sync_send_handler_(ctx);
+    } else {
+      ctx->SetError(sicl::transport::SICL_SUCCESS, "");
+    }
+  }
+
+  void SendRequest(const std::string &,
+                   const int,
+                   const sicl::rpc::ReqType,
+                   const google::protobuf::Message &,
+                   google::protobuf::Message *,
+                   const std::shared_ptr<sicl::rpc::RpcContext>,
+                   const sicl::rpc::RpcDoneFn) override {}
+
+  int Stop() override { return 0; }
+  int Start(const int) override { return 0; }
+  void RunUntilAskedToQuit() override {}
+  bool RegisterHandler(const sicl::rpc::ReqType, const sicl::rpc::HandlerBase *) override { return true; }
+  void HandleRequest(const std::shared_ptr<sicl::rpc::RpcContext>,
+                     const std::shared_ptr<sicl::rpc::Connection>,
+                     const sicl::rpc::ReqType,
+                     const void *,
+                     const size_t) override {}
+  std::vector<sicl::transport::IbvDevice *> GetAllDevices() const override { return {}; }
+  sicl::transport::Mempool *GetMempool() const override { return nullptr; }
+
+  void SetConnectHandler(std::function<std::shared_ptr<sicl::rpc::Connection>()> handler) {
+    connect_handler_ = std::move(handler);
+  }
+
+  void SetSyncSendHandler(std::function<void(const std::shared_ptr<sicl::rpc::RpcContext> &)> handler) {
+    sync_send_handler_ = std::move(handler);
+  }
+
+  void SetAsyncSendHandler(std::function<void(const std::shared_ptr<sicl::rpc::RpcContext> &)> handler) {
+    async_send_handler_ = std::move(handler);
+  }
+
+  void SetConnectDelay(std::chrono::milliseconds delay) { connect_delay_ = delay; }
+
+  int ConnectCalls() const { return connect_calls_.load(); }
+  int SyncSendCalls() const { return sync_send_calls_.load(); }
+  int AsyncSendCalls() const { return async_send_calls_.load(); }
+
+ private:
+  std::atomic<int> connect_calls_{0};
+  std::atomic<int> sync_send_calls_{0};
+  std::atomic<int> async_send_calls_{0};
+  std::chrono::milliseconds connect_delay_{0};
+  std::function<std::shared_ptr<sicl::rpc::Connection>()> connect_handler_{};
+  std::function<void(const std::shared_ptr<sicl::rpc::RpcContext> &)> sync_send_handler_{};
+  std::function<void(const std::shared_ptr<sicl::rpc::RpcContext> &)> async_send_handler_{};
 };
 
 std::shared_ptr<sicl::rpc::RpcContext> MakeFailedRpcContext(int error_code) {
@@ -195,13 +296,69 @@ class ClientMessengerTestPeer {
   static bool IsInitialized() { return ClientMessenger::Instance().initialized_; }
 
   static std::string CmAddr() { return ClientMessenger::Instance().cm_addr_; }
+
+  static sicl::rpc::SiRPC *SwapRpcClient(sicl::rpc::SiRPC *replacement) {
+    auto &messenger = ClientMessenger::Instance();
+    auto *original = messenger.rpc_client_;
+    messenger.rpc_client_ = replacement;
+    return original;
+  }
+
+  static error_code_t CallSyncLookup(uint16_t shard_id) {
+    auto ctx = std::make_shared<simm::common::SimmContext>();
+    sicl::rpc::RpcContext *ctx_p = nullptr;
+    sicl::rpc::RpcContext::newInstance(ctx_p);
+    auto rpc_ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
+    ctx->set_rpc_ctx(rpc_ctx);
+    rpc_ctx->set_timeout(sicl::transport::TimerTick::TIMER_1S);
+
+    KVLookupRequestPB req;
+    req.set_shard_id(shard_id);
+    req.set_key("mock-key");
+    auto resp = std::make_shared<KVLookupResponsePB>();
+    return ClientMessenger::Instance().call_sync<KVLookupRequestPB, KVLookupResponsePB>(
+        shard_id, static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_LOOKUP), req, resp, ctx);
+  }
+
+  static error_code_t BuildConnectionWait(const std::string &addr) {
+    return ClientMessenger::Instance().build_connection(addr, ClientMessenger::BuildConnWaitMode::kWaitForInflight);
+  }
+
+  static error_code_t BuildConnectionNoWait(const std::string &addr) {
+    return ClientMessenger::Instance().build_connection(addr, ClientMessenger::BuildConnWaitMode::kNoWait);
+  }
 };
 
 class ClientMessengerUnitTest : public ::testing::Test {
  protected:
-  void SetUp() override { ClientMessengerTestPeer::ResetState(); }
+  void SetUp() override {
+    ClientMessengerTestPeer::ResetState();
+    original_rpc_client_ = ClientMessengerTestPeer::SwapRpcClient(nullptr);
+  }
 
-  void TearDown() override { ClientMessengerTestPeer::ResetState(); }
+  void TearDown() override {
+    if (injected_rpc_client_ != nullptr) {
+      auto *to_delete = ClientMessengerTestPeer::SwapRpcClient(original_rpc_client_);
+      if (to_delete != nullptr && to_delete != original_rpc_client_) {
+        delete to_delete;
+      }
+      injected_rpc_client_ = nullptr;
+    } else {
+      ClientMessengerTestPeer::SwapRpcClient(original_rpc_client_);
+    }
+    ClientMessengerTestPeer::ResetState();
+  }
+
+  FakeSiRPC *InstallFakeRpcClient() {
+    auto *fake = new FakeSiRPC();
+    ClientMessengerTestPeer::SwapRpcClient(fake);
+    injected_rpc_client_ = fake;
+    return fake;
+  }
+
+ private:
+  sicl::rpc::SiRPC *original_rpc_client_{nullptr};
+  sicl::rpc::SiRPC *injected_rpc_client_{nullptr};
 };
 
 TEST_F(ClientMessengerUnitTest, PruneStaleConnectionsRemovesDeadDataservers) {
@@ -260,6 +417,111 @@ TEST_F(ClientMessengerUnitTest, ConnectionAccessorsStayConsistentDuringConcurren
 
   auto final_conn = ClientMessengerTestPeer::GetConnection("10.0.0.1:1001");
   EXPECT_TRUE(final_conn == conn_a || final_conn == conn_b);
+}
+
+TEST_F(ClientMessengerUnitTest, SyncRetryFlagControlsRetryCountForTimeoutErrors) {
+  auto *fake_rpc = InstallFakeRpcClient();
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.1:1001", true, 1, {0}, std::make_shared<FakeConnection>("ready"));
+
+  const auto old_enable_retry = FLAGS_clnt_syncreq_enable_retry;
+  const auto old_retry_count = FLAGS_clnt_syncreq_retry_count;
+
+  fake_rpc->SetSyncSendHandler([](const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+    ctx->SetError(sicl::transport::SICL_ERR_TIMEOUT, "timeout");
+  });
+
+  FLAGS_clnt_syncreq_enable_retry = false;
+  FLAGS_clnt_syncreq_retry_count = 2;
+  EXPECT_EQ(ClientMessengerTestPeer::CallSyncLookup(0), ClntErr::ClntSendRPCFailed);
+  EXPECT_EQ(fake_rpc->SyncSendCalls(), 1);
+
+  FLAGS_clnt_syncreq_enable_retry = true;
+  FLAGS_clnt_syncreq_retry_count = 2;
+  EXPECT_EQ(ClientMessengerTestPeer::CallSyncLookup(0), ClntErr::ClntSendRPCFailed);
+  EXPECT_EQ(fake_rpc->SyncSendCalls(), 4);
+
+  FLAGS_clnt_syncreq_enable_retry = old_enable_retry;
+  FLAGS_clnt_syncreq_retry_count = old_retry_count;
+}
+
+TEST_F(ClientMessengerUnitTest, ConcurrentForegroundBuildConnectionFailsFastFollowers) {
+  auto *fake_rpc = InstallFakeRpcClient();
+  fake_rpc->SetConnectDelay(std::chrono::milliseconds(200));
+  fake_rpc->SetConnectHandler([]() { return std::make_shared<FakeConnection>("connected"); });
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.8:1008", false, 0, {0}, nullptr);
+
+  std::atomic<int> ready{0};
+  std::atomic<bool> go{false};
+  std::atomic<int> ok_count{0};
+  std::atomic<int> fail_count{0};
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 8; ++i) {
+    threads.emplace_back([&]() {
+      ready.fetch_add(1);
+      while (!go.load()) {
+        std::this_thread::yield();
+      }
+      auto ret = ClientMessengerTestPeer::BuildConnectionNoWait("10.0.0.8:1008");
+      if (ret == CommonErr::OK) {
+        ok_count.fetch_add(1);
+      } else {
+        EXPECT_EQ(ret, ClntErr::BuildConnectionFailed);
+        fail_count.fetch_add(1);
+      }
+    });
+  }
+
+  while (ready.load() != 8) {
+    std::this_thread::yield();
+  }
+  go.store(true);
+
+  for (auto &t : threads) {
+    t.join();
+  }
+
+  EXPECT_EQ(fake_rpc->ConnectCalls(), 1);
+  EXPECT_GE(ok_count.load(), 1);
+  EXPECT_GE(fail_count.load(), 1);
+  EXPECT_TRUE(ClientMessengerTestPeer::IsDsActive("10.0.0.8:1008"));
+}
+
+TEST_F(ClientMessengerUnitTest, ConcurrentBackgroundBuildConnectionWaitsAndSharesSingleConnect) {
+  auto *fake_rpc = InstallFakeRpcClient();
+  fake_rpc->SetConnectDelay(std::chrono::milliseconds(100));
+  fake_rpc->SetConnectHandler([]() { return std::make_shared<FakeConnection>("connected"); });
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.9:1009", false, 0, {0}, nullptr);
+
+  std::atomic<int> ready{0};
+  std::atomic<bool> go{false};
+  std::atomic<int> ok_count{0};
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 6; ++i) {
+    threads.emplace_back([&]() {
+      ready.fetch_add(1);
+      while (!go.load()) {
+        std::this_thread::yield();
+      }
+      auto ret = ClientMessengerTestPeer::BuildConnectionWait("10.0.0.9:1009");
+      EXPECT_EQ(ret, CommonErr::OK);
+      if (ret == CommonErr::OK) {
+        ok_count.fetch_add(1);
+      }
+    });
+  }
+
+  while (ready.load() != 6) {
+    std::this_thread::yield();
+  }
+  go.store(true);
+
+  for (auto &t : threads) {
+    t.join();
+  }
+
+  EXPECT_EQ(fake_rpc->ConnectCalls(), 1);
+  EXPECT_EQ(ok_count.load(), 6);
+  EXPECT_TRUE(ClientMessengerTestPeer::IsDsActive("10.0.0.9:1009"));
 }
 
 TEST_F(ClientMessengerUnitTest, ReInitRefreshesRoutingBuildsConnectionsAndPrunesStaleServers) {
