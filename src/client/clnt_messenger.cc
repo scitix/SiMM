@@ -40,6 +40,7 @@ DECLARE_uint32(shard_total_num);
 DECLARE_uint32(clnt_thread_pool_size);
 DECLARE_uint32(clnt_cm_addr_check_interval_inSecs);
 DECLARE_uint32(clnt_syncreq_retry_count);
+DECLARE_bool(clnt_syncreq_enable_retry);
 DECLARE_bool(simm_enable_trace);
 
 DECLARE_LOG_MODULE("simm_client");
@@ -193,27 +194,64 @@ std::string ClientMessenger::get_cm_address() {
   return cm_ips[0].second;
 }
 
-error_code_t ClientMessenger::build_connection(const std::string &addr) {
-#if defined(SIMM_UNIT_TEST)
-  if (test_build_connection_hook_) {
-    return test_build_connection_hook_(addr);
+error_code_t ClientMessenger::build_connection(const std::string &addr, BuildConnWaitMode wait_mode) {
+  auto ds_ctx = GetOrCreateConnectionContext(addr);
+  if (ds_ctx->active.load() && ds_ctx->LoadConnection() != nullptr) {
+    return CommonErr::OK;
   }
-#endif
+
+  bool expected = false;
+  if (!ds_ctx->connecting_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+    if (wait_mode == BuildConnWaitMode::kNoWait) {
+      return ClntErr::BuildConnectionFailed;
+    }
+    std::unique_lock lock(ds_ctx->connect_wait_mutex_);
+    ds_ctx->connect_cv_.wait(lock, [&]() { return !ds_ctx->connecting_.load(std::memory_order_acquire); });
+    if (ds_ctx->active.load() && ds_ctx->LoadConnection() != nullptr) {
+      return CommonErr::OK;
+    }
+    return ClntErr::BuildConnectionFailed;
+  }
+
+  error_code_t ret = CommonErr::OK;
+  std::shared_ptr<sicl::rpc::Connection> connection;
   auto node_addr = simm::common::NodeAddress::ParseFromString(addr);
   if (!node_addr) {
     MLOG_ERROR("Invalid server address format: {}", addr);
-    return CommonErr::InvalidArgument;
+    ret = CommonErr::InvalidArgument;
+  } else {
+#if defined(SIMM_UNIT_TEST)
+    if (test_build_connection_hook_) {
+      ret = test_build_connection_hook_(addr);
+    } else
+#endif
+    {
+      connection = rpc_client_->connect(node_addr->node_ip_, node_addr->node_port_);
+      if (connection == nullptr) {
+        MLOG_ERROR("Build connection with {} failed", addr);
+        ret = ClntErr::BuildConnectionFailed;
+      }
+    }
   }
-  std::shared_ptr<sicl::rpc::Connection> connection = rpc_client_->connect(node_addr->node_ip_, node_addr->node_port_);
-  if (connection == nullptr) {
-    MLOG_ERROR("Build connection with {} failed", addr);
-    return ClntErr::BuildConnectionFailed;
+
+  if (ret == CommonErr::OK) {
+#if !defined(SIMM_UNIT_TEST)
+    ds_ctx->StoreConnection(connection);
+    ds_ctx->gen_num.fetch_add(1);
+    ds_ctx->active.store(true);
+#else
+    if (test_build_connection_hook_ == nullptr) {
+      ds_ctx->StoreConnection(connection);
+      ds_ctx->gen_num.fetch_add(1);
+      ds_ctx->active.store(true);
+    } else if (!(ds_ctx->active.load() && ds_ctx->LoadConnection() != nullptr)) {
+      ret = ClntErr::BuildConnectionFailed;
+    }
+#endif
   }
-  auto ds_ctx = GetOrCreateConnectionContext(addr);
-  ds_ctx->StoreConnection(connection);
-  ds_ctx->gen_num.fetch_add(1);
-  ds_ctx->active.store(true);
-  return CommonErr::OK;
+  ds_ctx->connecting_.store(false, std::memory_order_release);
+  ds_ctx->connect_cv_.notify_all();
+  return ret;
 }
 
 void ClientMessenger::ReleaseConnectionContext(const std::shared_ptr<ConnectionContext> &ds_ctx) {
@@ -285,7 +323,6 @@ error_code_t ClientMessenger::call_sync(uint16_t shard_id,
       auto connection = ds_ctx->LoadConnection();
       if (connection == nullptr) {
         MLOG_ERROR("Transport connection is null for shard id {}, data server is {}", shard_id, ds_ctx->ip_port);
-        ReconnectByErrors(rpc_ctx, ds_ctx, shard_id, tag);
       } else {
 #ifdef SIMM_APIPERF
         auto t1 = std::chrono::steady_clock::now();
@@ -307,19 +344,25 @@ error_code_t ClientMessenger::call_sync(uint16_t shard_id,
           MLOG_DEBUG("call_sync rpc succeed");
           return CommonErr::OK;
         }
-        ReconnectByErrors(rpc_ctx, ds_ctx, shard_id, tag);
       }
+      // trigger background failover thread to do global routing table re-fetch and
+      // QP connections re-build by specified errors
+      ReconnectByErrors(rpc_ctx, ds_ctx, shard_id, tag);
     } else {
       MLOG_WARN("Transport connection is inactive for shard id {}, data server is {}", shard_id, ds_ctx->ip_port);
     }
 
-    if (i < FLAGS_clnt_syncreq_retry_count) {
+    if (!FLAGS_clnt_syncreq_enable_retry) {
+      MLOG_WARN("Sync requests retry mechanism ({} retries) disabled", FLAGS_clnt_syncreq_retry_count);
+      break;
+    } else if (i < FLAGS_clnt_syncreq_retry_count) {
       std::this_thread::sleep_for(retry_delay);
       retry_delay *= 2;
     }
   }
 
-  MLOG_ERROR("Failed to send request after {} retries (sync call)", FLAGS_clnt_syncreq_retry_count);
+  MLOG_ERROR("Failed to send request after {} retries (sync call)",
+             FLAGS_clnt_syncreq_enable_retry ? FLAGS_clnt_syncreq_retry_count : 0);
   return ClntErr::ClntSendRPCFailed;
 }
 
@@ -350,7 +393,7 @@ error_code_t ClientMessenger::execute(const std::string &addr,
   if (!ds_ctx->active.load()) {
     // If one data server is new added and can't be connected, background failover thread will try
     // reconnect action by reinit
-    auto ret = build_connection(addr);
+    auto ret = build_connection(addr, BuildConnWaitMode::kNoWait);
     if (ret != CommonErr::OK) {
       MLOG_ERROR("Connect with {} failed :{}", addr, ret);
       return ret;

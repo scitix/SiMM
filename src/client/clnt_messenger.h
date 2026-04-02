@@ -98,7 +98,12 @@ class ClientMessenger {
   error_code_t RegisterHandlers();
 
   // build sicl connection
-  error_code_t build_connection(const std::string &addr);
+  enum class BuildConnWaitMode {
+    kWaitForInflight,
+    kNoWait,
+  };
+  error_code_t build_connection(const std::string &addr,
+                                BuildConnWaitMode wait_mode = BuildConnWaitMode::kWaitForInflight);
 
   // RPC options in threadpool
   template <typename RequestType, typename ResponseType>
@@ -169,8 +174,13 @@ class ClientMessenger {
     }
 
    private:
+    friend class ClientMessenger;
+
     mutable std::shared_mutex connection_mutex_;
     std::shared_ptr<sicl::rpc::Connection> connection_{nullptr};
+    std::mutex connect_wait_mutex_;
+    std::condition_variable connect_cv_;
+    std::atomic<bool> connecting_{false};
   };
 
   // cluster manager address
