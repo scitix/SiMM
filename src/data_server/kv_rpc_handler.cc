@@ -11,7 +11,6 @@
 #include "common/metrics/metrics.h"
 #include "data_server/kv_cache_pool.h"
 #include "data_server/kv_rpc_handler.h"
-#include "proto/common.pb.h"
 #include "proto/ds_clnt_rpcs.pb.h"
 #include "proto/ds_cm_rpcs.pb.h"
 
@@ -212,21 +211,6 @@ void MgtResourceHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
   conn->SendResponse(*rsp, ctx, [rsp](std::shared_ptr<sicl::rpc::RpcContext> ctx) {
     if (ctx->Failed()) {
       MLOG_ERROR("{} response failed: {}({})", rsp->GetTypeName(), ctx->ErrorText(), ctx->ErrorCode());
-    }
-  });
-}
-
-void DsStatusHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
-                           const std::shared_ptr<sicl::rpc::Connection> conn,
-                           [[maybe_unused]] const google::protobuf::Message *request) const {
-  auto resp = std::make_shared<proto::common::DsStatusResponsePB>();
-  resp->set_ret_code(CommonErr::OK);
-  resp->set_is_registered(service_->is_registered_.load());
-  resp->set_cm_ready(service_->cm_ready_.load());
-  resp->set_heartbeat_failure_count(service_->heartbeat_failure_count_.load());
-  conn->SendResponse(*resp, ctx, [resp](std::shared_ptr<sicl::rpc::RpcContext> ctx) {
-    if (ctx->Failed()) {
-      MLOG_ERROR("{} response failed: {}({})", resp->GetTypeName(), ctx->ErrorText(), ctx->ErrorCode());
     }
   });
 }

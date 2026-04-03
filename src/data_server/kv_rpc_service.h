@@ -22,6 +22,7 @@
 #include "rpc/rpc_context.h"
 #include "transport/types.h"
 
+#include "common/admin/admin_server.h"
 #include "data_server/kv_cache_evictor.h"
 #include "data_server/kv_cache_pool.h"
 #include "data_server/kv_hash_table.h"
@@ -96,6 +97,7 @@ class KVRpcService {
   std::unique_ptr<sicl::rpc::SiRPC> mgmt_client_{nullptr};        // for service controls
   std::unique_ptr<sicl::rpc::SiRPC> mgt_service_{nullptr};        // for service controls
   std::unique_ptr<sicl::rpc::SiRPC> admin_rpc_service_{nullptr};  // for maintainence scenario
+  std::unique_ptr<simm::common::AdminServer> admin_server_{nullptr};  // UDS admin server
 
   std::unique_ptr<KVObjectPool> object_pool_{nullptr};
   std::unique_ptr<KVCachePool> cache_pool_{nullptr};
@@ -124,7 +126,6 @@ class KVRpcService {
   std::deque<std::atomic<size_t>> shard_used_bytes_;
 
   friend class KVCacheEvictor;
-  friend class DsStatusHandler;
 #if defined(SIMM_UNIT_TEST)
   FRIEND_TEST(KVServiceTest, TestClientHandlers);
   FRIEND_TEST(KVServiceLightTest, TestHeartbeatFailureCountResetOnSuccess);

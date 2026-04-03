@@ -26,6 +26,7 @@
 #include "data_server/kv_object_pool.h"
 #include "data_server/kv_rpc_handler.h"
 #include "data_server/kv_rpc_service.h"
+#include "proto/common.pb.h"
 
 DECLARE_LOG_MODULE("data_server");
 
@@ -153,6 +154,22 @@ error_code_t KVRpcService::Start() {
     pthread_setname_np(keepalive_thread_->native_handle(), "keepalive");
   }
 
+  // Start UDS admin server for local admin queries (ds status, gflags, etc.)
+  admin_server_ = std::make_unique<simm::common::AdminServer>("ds");
+  admin_server_->RegisterHandler(
+      simm::common::AdminMsgType::DS_STATUS,
+      [this](const std::string& /* payload */) -> std::string {
+        proto::common::DsStatusResponsePB resp;
+        resp.set_ret_code(CommonErr::OK);
+        resp.set_is_registered(is_registered_.load());
+        resp.set_cm_ready(cm_ready_.load());
+        resp.set_heartbeat_failure_count(heartbeat_failure_count_.load());
+        std::string buf;
+        resp.SerializeToString(&buf);
+        return buf;
+      });
+  admin_server_->Start();
+
 #ifdef SIMM_ENABLE_TRACE
   simm::trace::TraceManager::Instance().SetEnabled(FLAGS_simm_enable_trace);
 #endif
@@ -162,6 +179,9 @@ error_code_t KVRpcService::Start() {
 error_code_t KVRpcService::Stop() {
   if (!is_running_) {
     return CommonErr::OK;  // Already stopped
+  }
+  if (admin_server_) {
+    admin_server_->Stop();
   }
   is_registered_ = true;
   register_condv_.post();
@@ -265,14 +285,6 @@ error_code_t KVRpcService::RegisterHandlers() {
     return DsErr::RegisterRPCHandlerFailed;
   }
 #endif
-  res = admin_rpc_service_->RegisterHandler(
-      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_DS_STATUS_REQ),
-      new DsStatusHandler(this, admin_rpc_service_.get(), new proto::common::DsStatusRequestPB));
-  if (!res) {
-    MLOG_ERROR("RegisterHandler for RPC_DS_STATUS_REQ({}) failed",
-      static_cast<int>(simm::common::CommonRpcType::RPC_DS_STATUS_REQ));
-    return DsErr::RegisterRPCHandlerFailed;
-  }
   return CommonErr::OK;  // Success
 }
 

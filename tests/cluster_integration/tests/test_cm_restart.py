@@ -62,13 +62,13 @@ class TestCMRestart:
         # Each DS should detect CM failure: cm_ready becomes false
         for ds in cluster_small.data_servers:
             assert cluster_small.observer.wait_for_ds_cm_not_ready(
-                ds.ip, ds.ports["admin"], timeout=hb_failure_wait
+                ds.pid, timeout=hb_failure_wait
             ), f"DS[{ds.index}] did not detect CM failure (cm_ready still true)"
 
         # Verify heartbeat_failure_count is non-zero on each DS
         for ds in cluster_small.data_servers:
             cluster_small.observer.assert_ds_heartbeat_failure_count(
-                ds.ip, ds.ports["admin"], min_count=5
+                ds.pid, min_count=5
             )
 
         # Restart CM so teardown works
@@ -97,13 +97,13 @@ class TestCMRestart:
         # Each DS should now report: registered=true, cm_ready=true, failure_count=0
         for ds in cluster_small.data_servers:
             assert cluster_small.observer.wait_for_ds_registered(
-                ds.ip, ds.ports["admin"], timeout=10
+                ds.pid, timeout=10
             ), f"DS[{ds.index}] did not re-register properly"
 
-            cluster_small.observer.assert_ds_is_registered(ds.ip, ds.ports["admin"])
-            cluster_small.observer.assert_ds_cm_ready(ds.ip, ds.ports["admin"], expected=True)
+            cluster_small.observer.assert_ds_is_registered(ds.pid)
+            cluster_small.observer.assert_ds_cm_ready(ds.pid, expected=True)
             cluster_small.observer.assert_ds_heartbeat_failure_count(
-                ds.ip, ds.ports["admin"], min_count=0, max_count=0
+                ds.pid, min_count=0, max_count=0
             )
 
     def test_shard_table_rebuilt_after_cm_restart(self, cluster_small):

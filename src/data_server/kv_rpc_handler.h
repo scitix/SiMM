@@ -86,19 +86,5 @@ class MgtResourceHandler : public sicl::rpc::HandlerBase {
   KVRpcService *service_;
 };
 
-class DsStatusHandler : public sicl::rpc::HandlerBase {
- public:
-  explicit DsStatusHandler(KVRpcService *service, sicl::rpc::SiRPC *admin_service,
-                           google::protobuf::Message *request)
-      : HandlerBase(admin_service, request), service_(service) {}
-
-  virtual void Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
-                    const std::shared_ptr<sicl::rpc::Connection> conn,
-                    const google::protobuf::Message *request) const override;
-
- private:
-  KVRpcService *service_;
-};
-
 }  // namespace ds
 }  // namespace simm

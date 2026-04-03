@@ -183,11 +183,11 @@ class TestDeferredReshardReplace:
 
         # DS-side: healthy state
         assert c.observer.wait_for_ds_registered(
-            new_ds.ip, new_ds.ports["admin"], timeout=10
+            new_ds.pid, timeout=10
         )
-        c.observer.assert_ds_cm_ready(new_ds.ip, new_ds.ports["admin"], expected=True)
+        c.observer.assert_ds_cm_ready(new_ds.pid, expected=True)
         c.observer.assert_ds_heartbeat_failure_count(
-            new_ds.ip, new_ds.ports["admin"], min_count=0, max_count=0
+            new_ds.pid, min_count=0, max_count=0
         )
 
 

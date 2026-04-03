@@ -8,6 +8,7 @@
 #include <gflags/gflags.h>
 #include <folly/init/Init.h>
 
+#include "common/admin/admin_server.h"
 #include "common/base/common_types.h"
 #include "common/errcode/errcode_def.h"
 #include "common/logging/logging.h"
@@ -109,14 +110,21 @@ int main(int argc, char *argv[]) {
     goto exit;
   }
 
-  MLOG_INFO("ClusterManager main process starts successfully!");
+  {
+    // Start UDS admin server for local admin queries (gflags, etc.)
+    auto cm_admin_server = std::make_unique<simm::common::AdminServer>("cm");
+    cm_admin_server->Start();
+
+    MLOG_INFO("ClusterManager main process starts successfully!");
 
   // Simulate as a long-running process
   while (!sQuitPorcess.load()) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 
-  MLOG_WARN("Signal caught. ClusterManager main process exit...");
+    MLOG_WARN("Signal caught. ClusterManager main process exit...");
+    cm_admin_server->Stop();
+  }
 
 exit:
   return rc;

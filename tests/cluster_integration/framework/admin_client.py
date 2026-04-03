@@ -181,26 +181,47 @@ class AdminClient:
                 distribution[row[0]] = shard_ids
         return distribution
 
-    # --- DS status operations ---
+    # --- DS status operations (via UDS, requires PID) ---
 
-    def get_ds_status(self, ds_ip: str, ds_admin_port: int) -> dict[str, str]:
+    def get_ds_status(self, ds_pid: int) -> dict[str, str]:
         """
-        Query DS internal status via simm_ctl_admin ds status.
+        Query DS internal status via simm_ctl_admin --pid <PID> ds status.
+        Uses Unix domain socket /run/simm/simm_ds.<pid>.sock on the DS host.
         Returns {"is_registered": "true"/"false",
                  "cm_ready": "true"/"false",
                  "heartbeat_failure_count": "N"}.
         """
+        cmd = [
+            str(self._ctl),
+            "--ip", "127.0.0.1",    # required by CLI but unused for UDS
+            "--pid", str(ds_pid),
+            "ds", "status",
+        ]
+        timeout = self._timeout
+        logger.debug("Running: %s", " ".join(cmd))
         try:
-            output = self._run_ctl(ds_ip, ds_admin_port, ["ds", "status"])
-            rows = self._parse_tabulate_rows(output)
-            result = {}
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout
+            )
+            if result.returncode != 0:
+                raise AdminClientError(
+                    f"simm_ctl_admin ds status failed (rc={result.returncode}): "
+                    f"{result.stderr}"
+                )
+            rows = self._parse_tabulate_rows(result.stdout)
+            status = {}
             for row in rows[1:]:  # skip header
                 if len(row) >= 2:
-                    result[row[0]] = row[1]
-            return result
-        except AdminClientError as e:
-            logger.error("get_ds_status failed: %s", e)
-            return {}
+                    status[row[0]] = row[1]
+            return status
+        except subprocess.TimeoutExpired:
+            raise AdminClientError(
+                f"simm_ctl_admin ds status timed out after {timeout}s"
+            )
+        except FileNotFoundError:
+            raise AdminClientError(
+                f"simm_ctl_admin not found at {self._ctl}"
+            )
 
     # --- GFlag operations ---
 

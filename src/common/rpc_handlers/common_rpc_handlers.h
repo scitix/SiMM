@@ -18,7 +18,6 @@ enum class CommonRpcType {
   RPC_LIST_NODE_REQ,
   RPC_SET_NODE_STATUS_REQ,
   RPC_TRACE_TOGGLE_REQ,
-  RPC_DS_STATUS_REQ,
 
   //.....
 };

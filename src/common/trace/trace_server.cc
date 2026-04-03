@@ -28,11 +28,13 @@ namespace simm {
 namespace trace {
 
 // Align UDS message types with admin side
+// Keep in sync with common/admin/admin_msg_types.h
 enum class AdminMsgType : uint16_t {
   TRACE_TOGGLE = 1,
   GFLAG_LIST   = 2,
   GFLAG_GET    = 3,
   GFLAG_SET    = 4,
+  DS_STATUS    = 5,
 };
 
 TraceServer::TraceServer(std::string basePath)
