@@ -1,3 +1,4 @@
+add_subdirectory(admin)
 add_subdirectory(base)
 add_subdirectory(common_flags)
 add_subdirectory(errcode)
