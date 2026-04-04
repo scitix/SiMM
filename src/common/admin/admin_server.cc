@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
@@ -29,11 +30,11 @@ namespace simm {
 namespace common {
 
 // ---------------------------------------------------------------------------
-// Construction / destruction
+// Construction: create socket, bind, listen, spawn serve thread
 // ---------------------------------------------------------------------------
 
-AdminServer::AdminServer(std::string role) : role_(std::move(role)) {
-  // Ensure /run/simm/ directory exists
+AdminServer::AdminServer(const std::string& name) : name_(name) {
+  // Ensure /run/simm/ exists
   const char* base_dir = "/run/simm";
   struct stat st;
   if (::stat(base_dir, &st) != 0) {
@@ -43,10 +44,20 @@ AdminServer::AdminServer(std::string role) : role_(std::move(role)) {
     }
   }
 
-  socket_path_ = std::string(base_dir) + "/simm_" + role_ + "." +
+  // Socket path: /run/simm/simm_<name>.<pid>.sock
+  socket_path_ = std::string(base_dir) + "/simm_" + name_ + "." +
                   std::to_string(::getpid()) + ".sock";
   ::unlink(socket_path_.c_str());
 
+  // Create self-pipe for clean shutdown (Ceph AdminSocket pattern)
+  if (::pipe(shutdown_pipe_) < 0) {
+    MLOG_ERROR("pipe() failed for shutdown self-pipe, errno={}", errno);
+    return;
+  }
+  // Make read end non-blocking
+  ::fcntl(shutdown_pipe_[0], F_SETFL, O_NONBLOCK);
+
+  // Create listen socket
   listen_fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
   if (listen_fd_ < 0) {
     MLOG_ERROR("socket(AF_UNIX) failed, errno={}", errno);
@@ -64,17 +75,17 @@ AdminServer::AdminServer(std::string role) : role_(std::move(role)) {
 
   if (::bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), addr_len) < 0) {
     MLOG_ERROR("bind({}) failed, errno={}", socket_path_, errno);
-    Cleanup();
+    Shutdown();
     return;
   }
 
   if (::listen(listen_fd_, 16) < 0) {
     MLOG_ERROR("listen({}) failed, errno={}", socket_path_, errno);
-    Cleanup();
+    Shutdown();
     return;
   }
 
-  // Register built-in handlers
+  // Register built-in handlers (gflag + trace, available for all processes)
   handlers_[static_cast<uint16_t>(AdminMsgType::GFLAG_LIST)] =
       [this](const std::string& p) { return HandleGFlagList(p); };
   handlers_[static_cast<uint16_t>(AdminMsgType::GFLAG_GET)] =
@@ -84,10 +95,55 @@ AdminServer::AdminServer(std::string role) : role_(std::move(role)) {
   handlers_[static_cast<uint16_t>(AdminMsgType::TRACE_TOGGLE)] =
       [this](const std::string& p) { return HandleTraceToggle(p); };
 
-  MLOG_INFO("AdminServer({}) listening on {}", role_, socket_path_);
+  // Spawn serve thread
+  running_.store(true);
+  worker_ = std::thread(&AdminServer::ServeLoop, this);
+
+  MLOG_INFO("AdminServer({}) listening on {}", name_, socket_path_);
 }
 
-AdminServer::~AdminServer() { Stop(); }
+// ---------------------------------------------------------------------------
+// Destruction: signal thread to exit, join, close fds, unlink socket
+// ---------------------------------------------------------------------------
+
+AdminServer::~AdminServer() {
+  Shutdown();
+}
+
+void AdminServer::Shutdown() {
+  if (!running_.exchange(false)) {
+    // Already shut down or never started — just clean up fds
+    if (listen_fd_ >= 0) { ::close(listen_fd_); listen_fd_ = -1; }
+    if (shutdown_pipe_[0] >= 0) { ::close(shutdown_pipe_[0]); shutdown_pipe_[0] = -1; }
+    if (shutdown_pipe_[1] >= 0) { ::close(shutdown_pipe_[1]); shutdown_pipe_[1] = -1; }
+    if (!socket_path_.empty()) { ::unlink(socket_path_.c_str()); }
+    return;
+  }
+
+  // Wake the serve loop via self-pipe (Ceph pattern)
+  if (shutdown_pipe_[1] >= 0) {
+    char c = 'x';
+    (void)::write(shutdown_pipe_[1], &c, 1);
+  }
+
+  // Join serve thread
+  if (worker_.joinable()) {
+    worker_.join();
+  }
+
+  // Close all fds
+  if (listen_fd_ >= 0) { ::close(listen_fd_); listen_fd_ = -1; }
+  if (shutdown_pipe_[0] >= 0) { ::close(shutdown_pipe_[0]); shutdown_pipe_[0] = -1; }
+  if (shutdown_pipe_[1] >= 0) { ::close(shutdown_pipe_[1]); shutdown_pipe_[1] = -1; }
+
+  // Remove socket file
+  if (!socket_path_.empty()) {
+    ::unlink(socket_path_.c_str());
+    MLOG_INFO("AdminServer({}) shut down, unlinked {}", name_, socket_path_);
+  }
+
+  handlers_.clear();
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -97,44 +153,48 @@ void AdminServer::RegisterHandler(AdminMsgType msg_type, Handler handler) {
   handlers_[static_cast<uint16_t>(msg_type)] = std::move(handler);
 }
 
-void AdminServer::Start() {
-  if (running_.exchange(true)) {
-    return;  // already running
-  }
-  worker_ = std::thread(&AdminServer::ServeLoop, this);
-}
-
-void AdminServer::Stop() {
-  if (!running_.exchange(false)) {
-    Cleanup();
-    return;
-  }
-  if (listen_fd_ >= 0) {
-    ::shutdown(listen_fd_, SHUT_RDWR);
-  }
-  if (worker_.joinable()) {
-    worker_.join();
-  }
-  Cleanup();
-}
-
 // ---------------------------------------------------------------------------
-// Serve loop
+// Serve loop: poll on listen_fd + shutdown_pipe, accept clients
 // ---------------------------------------------------------------------------
 
 void AdminServer::ServeLoop() {
   while (running_.load()) {
-    int client_fd = ::accept(listen_fd_, nullptr, nullptr);
-    if (client_fd < 0) {
+    struct pollfd fds[2];
+    fds[0].fd = listen_fd_;
+    fds[0].events = POLLIN;
+    fds[1].fd = shutdown_pipe_[0];
+    fds[1].events = POLLIN;
+
+    int ret = ::poll(fds, 2, -1);  // block until event
+    if (ret < 0) {
       if (errno == EINTR) continue;
-      if (!running_.load()) break;
-      MLOG_ERROR("accept() failed on {}, errno={}", socket_path_, errno);
+      MLOG_ERROR("poll() failed on {}, errno={}", socket_path_, errno);
       break;
     }
-    HandleClient(client_fd);
-    ::close(client_fd);
+
+    // Check shutdown signal
+    if (fds[1].revents & POLLIN) {
+      break;  // woken up by destructor
+    }
+
+    // Check new client connection
+    if (fds[0].revents & POLLIN) {
+      int client_fd = ::accept(listen_fd_, nullptr, nullptr);
+      if (client_fd < 0) {
+        if (errno == EINTR) continue;
+        if (!running_.load()) break;
+        MLOG_ERROR("accept() failed on {}, errno={}", socket_path_, errno);
+        continue;
+      }
+      HandleClient(client_fd);
+      ::close(client_fd);
+    }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Client handling: read frame, dispatch to handler, send response
+// ---------------------------------------------------------------------------
 
 void AdminServer::HandleClient(int client_fd) {
   // Read frame: [uint32_t len][uint16_t type][payload]
@@ -177,7 +237,7 @@ void AdminServer::HandleClient(int client_fd) {
 // Built-in handlers
 // ---------------------------------------------------------------------------
 
-std::string AdminServer::HandleGFlagList(const std::string& payload) {
+std::string AdminServer::HandleGFlagList(const std::string& /*payload*/) {
   proto::common::ListAllGFlagsResponsePB resp;
   std::vector<gflags::CommandLineFlagInfo> all_flags;
   gflags::GetAllFlags(&all_flags);
@@ -268,24 +328,6 @@ bool AdminServer::ReadExact(int fd, void* buf, size_t len) {
       remaining -= static_cast<size_t>(n);
       p += n;
     } else if (n == 0) {
-      return false;  // peer closed
-    } else {
-      if (errno == EINTR) continue;
-      return false;
-    }
-  }
-  return true;
-}
-
-bool AdminServer::WriteAll(int fd, const void* buf, size_t len) {
-  const char* p = static_cast<const char*>(buf);
-  size_t remaining = len;
-  while (remaining > 0) {
-    ssize_t n = ::write(fd, p, remaining);
-    if (n > 0) {
-      remaining -= static_cast<size_t>(n);
-      p += n;
-    } else if (n == 0) {
       return false;
     } else {
       if (errno == EINTR) continue;
@@ -312,17 +354,6 @@ void AdminServer::SendResponse(int client_fd, AdminMsgType type,
   ssize_t n = ::writev(client_fd, iov, 3);
   if (n < 0) {
     MLOG_WARN("Failed to send admin response on {}, errno={}", socket_path_, errno);
-  }
-}
-
-void AdminServer::Cleanup() {
-  if (listen_fd_ >= 0) {
-    ::close(listen_fd_);
-    listen_fd_ = -1;
-  }
-  if (!socket_path_.empty()) {
-    ::unlink(socket_path_.c_str());
-    MLOG_INFO("Unlinked admin socket: {}", socket_path_);
   }
 }
 

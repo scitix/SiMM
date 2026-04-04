@@ -10,6 +10,7 @@
 #include "cm_hb_monitor.h"
 #include "cm_node_manager.h"
 #include "cm_shard_manager.h"
+#include "common/admin/admin_server.h"
 #include "common/errcode/errcode_def.h"
 
 namespace simm {
@@ -46,6 +47,10 @@ class ClusterManagerService {
   error_code_t Init();
   error_code_t Start();
   error_code_t Stop();
+
+  // Register CM-specific admin handlers to the UDS AdminServer.
+  // Called from cm_main after service is initialized.
+  void RegisterAdminHandlers(simm::common::AdminServer* admin_server);
 
   bool IsRunning() const { return is_running_.load(); }
   bool IsStopped() const { return !is_running_.load(); }

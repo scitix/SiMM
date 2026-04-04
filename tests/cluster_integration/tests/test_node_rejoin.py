@@ -55,7 +55,7 @@ class TestNodeRejoin:
             ds0.pid, timeout=10
         ), "DS did not report registered after rejoin"
 
-        cluster_small.observer.assert_ds_cm_ready(ds0.pid, expected=True)
+        cluster_small.observer.assert_ds_cm_ready(ds0.admin_name, ds0.pid, expected=True)
         cluster_small.observer.assert_ds_heartbeat_failure_count(
             ds0.pid, min_count=0, max_count=0
         )
@@ -86,8 +86,8 @@ class TestNodeRejoin:
         )
 
         # Final state: registered and cm_ready
-        cluster_small.observer.assert_ds_is_registered(ds0.pid)
-        cluster_small.observer.assert_ds_cm_ready(ds0.pid, expected=True)
+        cluster_small.observer.assert_ds_is_registered(ds0.admin_name, ds0.pid)
+        cluster_small.observer.assert_ds_cm_ready(ds0.admin_name, ds0.pid, expected=True)
 
     def test_ds_restart_rejoin(self, cluster_small):
         """Kill DS0, wait for DEAD + shard migration, restart, verify re-registration."""

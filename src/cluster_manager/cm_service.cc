@@ -209,5 +209,13 @@ error_code_t ClusterManagerService::StopRPCServices() {
   return CommonErr::OK;
 }
 
+void ClusterManagerService::RegisterAdminHandlers(
+    simm::common::AdminServer* admin_server) {
+  if (!admin_server) return;
+  // CM-specific admin handlers can be registered here in the future.
+  // Built-in gflag/trace handlers are already available from AdminServer.
+  MLOG_INFO("CM admin handlers registered");
+}
+
 }  // namespace cm
 }  // namespace simm

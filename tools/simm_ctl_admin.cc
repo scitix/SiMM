@@ -801,6 +801,7 @@ int main(int argc, char *argv[]) {
   std::string ip;
   int port;
   int pid;
+  std::string admin_name;
   std::string subcommand;
   std::string resource_type;
   std::string operation;
@@ -809,9 +810,10 @@ int main(int argc, char *argv[]) {
 
   po::options_description desc("SiMMCtl - SiMM RPC Management Tool");
   desc.add_options()("help,h", "Show help message")(
-      "ip,i", po::value<std::string>(&ip)->required(), "Target Cluster Manager IP address")(
-      "port,p", po::value<int>(&port)->default_value(30002), "Target Cluster Manager port")(
-      "pid,P", po::value<int>(&pid)->default_value(-1), "Target Client PID, used when tracing is enabled")(
+      "ip,i", po::value<std::string>(&ip)->default_value(""), "Target IP address for RPC-based commands")(
+      "port,p", po::value<int>(&port)->default_value(30002), "Target port for RPC-based commands")(
+      "pid,P", po::value<int>(&pid)->default_value(-1), "Target process PID for UDS-based commands")(
+      "name,n", po::value<std::string>(&admin_name)->default_value(""), "Target pod/service name for UDS socket")(
       "verbose,v", po::bool_switch(&verbose), "Enable verbose output");
 
   po::options_description hidden("Hidden options");
@@ -834,7 +836,7 @@ int main(int argc, char *argv[]) {
       std::cout << "SUBCOMMANDS:\n"
                 << "  node list [OPTIONS]           List all nodes\n"
                 << "  node set <IP:PORT> <STATUS>   Set node status (0=DEAD, 1=RUNNING)\n"
-                << "  ds status --pid <PID>          Query data server internal status via UDS\n"
+                << "  ds status --name <NAME> --pid <PID>  Query DS status via UDS\n"
                 << "  shard list [OPTIONS]          List all shards\n"
                 << "  gflag list [OPTIONS]          List all gflags\n"
                 << "  gflag get <NAME> [OPTIONS]    Get a gflag value\n"
@@ -879,14 +881,14 @@ int main(int argc, char *argv[]) {
       }
       operation = args[0];
       if (operation == "status") {
-        if (pid == -1) {
-          std::cerr << "Error: ds status requires --pid <DS_PID>\n";
+        if (pid == -1 || admin_name.empty()) {
+          std::cerr << "Error: ds status requires --name <POD_NAME> --pid <DS_PID>\n";
           return 1;
         }
-        std::string socket_path = "/run/simm/simm_ds." + std::to_string(pid) + ".sock";
+        std::string socket_path = "/run/simm/simm_" + admin_name + "." + std::to_string(pid) + ".sock";
         auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::DS_STATUS);
         if (!uds_channel->Init()) {
-          std::cerr << "Error: failed to connect to DS admin socket: " << socket_path << "\n";
+          std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
           return 1;
         }
         CallbackDsStatus(*uds_channel);

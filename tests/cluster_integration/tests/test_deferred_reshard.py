@@ -185,7 +185,7 @@ class TestDeferredReshardReplace:
         assert c.observer.wait_for_ds_registered(
             new_ds.pid, timeout=10
         )
-        c.observer.assert_ds_cm_ready(new_ds.pid, expected=True)
+        c.observer.assert_ds_cm_ready(new_ds.admin_name, new_ds.pid, expected=True)
         c.observer.assert_ds_heartbeat_failure_count(
             new_ds.pid, min_count=0, max_count=0
         )

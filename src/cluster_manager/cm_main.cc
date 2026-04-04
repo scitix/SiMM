@@ -51,6 +51,15 @@ void segfaultHandler([[maybe_unused]] int signal) {
   abort();
 }
 
+// Resolve the admin server name from POD_NAME env or fallback to "cm"
+static std::string ResolveAdminName() {
+  const char* pod_name = ::getenv("POD_NAME");
+  if (pod_name && std::strlen(pod_name) > 0) {
+    return pod_name;
+  }
+  return "cm";
+}
+
 int main(int argc, char *argv[]) {
   // init thirdparty modules
   // parse command line options to update global flags from command line
@@ -81,6 +90,11 @@ int main(int argc, char *argv[]) {
 
   // TODO(ytji): load configuration from file, e.g. cm_conf.json
 
+  // Init AdminServer early — before signal handlers and cmService.
+  // Constructor creates UDS socket, binds, listens, and spawns serve thread.
+  // Destructor handles shutdown (join thread, close fd, unlink socket).
+  auto admin_server = std::make_unique<simm::common::AdminServer>(ResolveAdminName());
+
   // Register signal handlers
   MLOG_INFO("Register signal handers for SIGINT/SIGTERM/SIGSEGV");
   std::signal(SIGINT, signalHandler);
@@ -99,33 +113,25 @@ int main(int argc, char *argv[]) {
   }
 
   error_code_t rc = CommonErr::OK;
-  // rc = cm_service_ptr->Init();
-  // if (rc != CommonErr::OK) {
-  //   MLOG_CRITICAL("Failed to init ClusterManagerService, rc:{}", rc);
-  //   goto exit;
-  // }
   rc = cm_service_ptr->Start();
   if (rc != CommonErr::OK) {
     MLOG_CRITICAL("Failed to start ClusterManager service, rc:{}", rc);
     goto exit;
   }
 
-  {
-    // Start UDS admin server for local admin queries (gflags, etc.)
-    auto cm_admin_server = std::make_unique<simm::common::AdminServer>("cm");
-    cm_admin_server->Start();
+  // Register CM-specific admin handlers after service is ready
+  cm_service_ptr->RegisterAdminHandlers(admin_server.get());
 
-    MLOG_INFO("ClusterManager main process starts successfully!");
+  MLOG_INFO("ClusterManager main process starts successfully!");
 
   // Simulate as a long-running process
   while (!sQuitPorcess.load()) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 
-    MLOG_WARN("Signal caught. ClusterManager main process exit...");
-    cm_admin_server->Stop();
-  }
+  MLOG_WARN("Signal caught. ClusterManager main process exit...");
 
 exit:
+  // admin_server destructor handles shutdown automatically
   return rc;
 }

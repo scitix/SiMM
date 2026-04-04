@@ -2,6 +2,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <thread>
 
@@ -9,6 +10,7 @@
 #include <gflags/gflags.h>
 #include <gflags/gflags_declare.h>
 
+#include "common/admin/admin_server.h"
 #include "common/errcode/errcode_def.h"
 #include "common/logging/logging.h"
 #include "common/version/version_info.h"
@@ -66,6 +68,15 @@ void signalHandler(int signal) {
   quitPorcess.store(true);
 }
 
+// Resolve the admin server name from POD_NAME env or fallback to "ds"
+static std::string ResolveAdminName() {
+  const char* pod_name = ::getenv("POD_NAME");
+  if (pod_name && std::strlen(pod_name) > 0) {
+    return pod_name;
+  }
+  return "ds";
+}
+
 int main(int argc, char *argv[]) {
   // init dependencies
   gflags::ParseCommandLineFlags(&argc, &argv, true);
@@ -94,6 +105,11 @@ int main(int argc, char *argv[]) {
 
   // TODO: load configuration file
 
+  // Init AdminServer early — before signal handlers and KVRpcService.
+  // Constructor creates UDS socket, binds, listens, and spawns serve thread.
+  // Destructor handles shutdown (join thread, close fd, unlink socket).
+  auto admin_server = std::make_unique<simm::common::AdminServer>(ResolveAdminName());
+
   // Register signal handlers and save previous ones
   MLOG_INFO("Register signal handers...");
   prevSigIntHandler = std::signal(SIGINT, signalHandler);
@@ -114,6 +130,9 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  // Register DS-specific admin handlers after service is ready
+  server->RegisterAdminHandlers(admin_server.get());
+
   MLOG_INFO("DataServer starts normally ...");
 
   // Simulate a long-running process
@@ -122,6 +141,7 @@ int main(int argc, char *argv[]) {
   }
 
   MLOG_INFO("Signal caught, cleanup done, exiting process ...");
+  // admin_server destructor handles shutdown automatically
 
   return 0;
 }

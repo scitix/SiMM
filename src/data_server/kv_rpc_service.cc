@@ -25,6 +25,7 @@
 #include "data_server/kv_hash_table.h"
 #include "data_server/kv_object_pool.h"
 #include "data_server/kv_rpc_handler.h"
+#include "common/admin/admin_server.h"
 #include "data_server/kv_rpc_service.h"
 #include "proto/common.pb.h"
 
@@ -154,22 +155,6 @@ error_code_t KVRpcService::Start() {
     pthread_setname_np(keepalive_thread_->native_handle(), "keepalive");
   }
 
-  // Start UDS admin server for local admin queries (ds status, gflags, etc.)
-  admin_server_ = std::make_unique<simm::common::AdminServer>("ds");
-  admin_server_->RegisterHandler(
-      simm::common::AdminMsgType::DS_STATUS,
-      [this](const std::string& /* payload */) -> std::string {
-        proto::common::DsStatusResponsePB resp;
-        resp.set_ret_code(CommonErr::OK);
-        resp.set_is_registered(is_registered_.load());
-        resp.set_cm_ready(cm_ready_.load());
-        resp.set_heartbeat_failure_count(heartbeat_failure_count_.load());
-        std::string buf;
-        resp.SerializeToString(&buf);
-        return buf;
-      });
-  admin_server_->Start();
-
 #ifdef SIMM_ENABLE_TRACE
   simm::trace::TraceManager::Instance().SetEnabled(FLAGS_simm_enable_trace);
 #endif
@@ -179,9 +164,6 @@ error_code_t KVRpcService::Start() {
 error_code_t KVRpcService::Stop() {
   if (!is_running_) {
     return CommonErr::OK;  // Already stopped
-  }
-  if (admin_server_) {
-    admin_server_->Stop();
   }
   is_registered_ = true;
   register_condv_.post();
@@ -817,6 +799,25 @@ void KVRpcService::GetResourceStats(const DataServerResourceRequestPB *req, Data
     info->set_shard_id(s);
     info->set_shard_mem_used_bytes(shard_used_bytes);
   }
+}
+
+void KVRpcService::RegisterAdminHandlers(simm::common::AdminServer* admin_server) {
+  if (!admin_server) return;
+
+  admin_server->RegisterHandler(
+      simm::common::AdminMsgType::DS_STATUS,
+      [this](const std::string& /* payload */) -> std::string {
+        proto::common::DsStatusResponsePB resp;
+        resp.set_ret_code(CommonErr::OK);
+        resp.set_is_registered(is_registered_.load());
+        resp.set_cm_ready(cm_ready_.load());
+        resp.set_heartbeat_failure_count(heartbeat_failure_count_.load());
+        std::string buf;
+        resp.SerializeToString(&buf);
+        return buf;
+      });
+
+  MLOG_INFO("DS admin handlers registered");
 }
 
 }  // namespace ds

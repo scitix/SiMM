@@ -48,8 +48,8 @@ class TestHeartbeat:
         time.sleep(hb_interval * 5)
 
         for ds in cluster_small.data_servers:
-            cluster_small.observer.assert_ds_is_registered(ds.pid)
-            cluster_small.observer.assert_ds_cm_ready(ds.pid, expected=True)
+            cluster_small.observer.assert_ds_is_registered(ds.admin_name, ds.pid)
+            cluster_small.observer.assert_ds_cm_ready(ds.admin_name, ds.pid, expected=True)
             cluster_small.observer.assert_ds_heartbeat_failure_count(
                 ds.pid, min_count=0, max_count=0
             )

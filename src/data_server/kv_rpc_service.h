@@ -22,7 +22,6 @@
 #include "rpc/rpc_context.h"
 #include "transport/types.h"
 
-#include "common/admin/admin_server.h"
 #include "data_server/kv_cache_evictor.h"
 #include "data_server/kv_cache_pool.h"
 #include "data_server/kv_hash_table.h"
@@ -42,6 +41,7 @@ DECLARE_int32(cm_rpc_inter_port);
 DECLARE_uint32(busy_wait_timeout_us);
 
 namespace simm {
+namespace common { class AdminServer; }
 namespace ds {
 
 class KVRpcService {
@@ -79,6 +79,10 @@ class KVRpcService {
   // Get resource stats info
   void GetResourceStats(const DataServerResourceRequestPB *req, DataServerResourceResponsePB *rsp);
 
+  // Register DS-specific admin handlers to the UDS AdminServer.
+  // Called from kv_server_main after service is initialized.
+  void RegisterAdminHandlers(simm::common::AdminServer* admin_server);
+
  private:
   error_code_t StartRPCServices();
   error_code_t StopRPCServices();
@@ -97,7 +101,6 @@ class KVRpcService {
   std::unique_ptr<sicl::rpc::SiRPC> mgmt_client_{nullptr};        // for service controls
   std::unique_ptr<sicl::rpc::SiRPC> mgt_service_{nullptr};        // for service controls
   std::unique_ptr<sicl::rpc::SiRPC> admin_rpc_service_{nullptr};  // for maintainence scenario
-  std::unique_ptr<simm::common::AdminServer> admin_server_{nullptr};  // UDS admin server
 
   std::unique_ptr<KVObjectPool> object_pool_{nullptr};
   std::unique_ptr<KVCachePool> cache_pool_{nullptr};
