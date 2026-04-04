@@ -2,7 +2,6 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
-#include <cstring>
 #include <iostream>
 #include <thread>
 
@@ -68,7 +67,6 @@ void signalHandler(int signal) {
   quitPorcess.store(true);
 }
 
-
 int main(int argc, char *argv[]) {
   // init dependencies
   gflags::ParseCommandLineFlags(&argc, &argv, true);
@@ -133,7 +131,6 @@ int main(int argc, char *argv[]) {
   }
 
   MLOG_INFO("Signal caught, cleanup done, exiting process ...");
-  // admin_server destructor handles shutdown automatically
 
   return 0;
 }

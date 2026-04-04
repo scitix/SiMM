@@ -51,7 +51,6 @@ void segfaultHandler([[maybe_unused]] int signal) {
   abort();
 }
 
-
 int main(int argc, char *argv[]) {
   // init thirdparty modules
   // parse command line options to update global flags from command line
@@ -105,6 +104,11 @@ int main(int argc, char *argv[]) {
   }
 
   error_code_t rc = CommonErr::OK;
+  // rc = cm_service_ptr->Init();
+  // if (rc != CommonErr::OK) {
+  //   MLOG_CRITICAL("Failed to init ClusterManagerService, rc:{}", rc);
+  //   goto exit;
+  // }
   rc = cm_service_ptr->Start();
   if (rc != CommonErr::OK) {
     MLOG_CRITICAL("Failed to start ClusterManager service, rc:{}", rc);
@@ -124,6 +128,5 @@ int main(int argc, char *argv[]) {
   MLOG_WARN("Signal caught. ClusterManager main process exit...");
 
 exit:
-  // admin_server destructor handles shutdown automatically
   return rc;
 }
