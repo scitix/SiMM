@@ -33,7 +33,7 @@ namespace common {
 // Construction: create socket, bind, listen, spawn serve thread
 // ---------------------------------------------------------------------------
 
-AdminServer::AdminServer(const std::string& name) : name_(name) {
+AdminServer::AdminServer(const std::string& role) : role_(role) {
   // Ensure /run/simm/ exists
   const char* base_dir = "/run/simm";
   struct stat st;
@@ -44,12 +44,12 @@ AdminServer::AdminServer(const std::string& name) : name_(name) {
     }
   }
 
-  // Socket path: /run/simm/simm_<name>.<pid>.sock
-  socket_path_ = std::string(base_dir) + "/simm_" + name_ + "." +
+  // Socket path: /run/simm/simm_<role>.<pid>.sock
+  socket_path_ = std::string(base_dir) + "/simm_" + role_ + "." +
                   std::to_string(::getpid()) + ".sock";
   ::unlink(socket_path_.c_str());
 
-  // Create self-pipe for clean shutdown (Ceph AdminSocket pattern)
+  // Create self-pipe for clean shutdown
   if (::pipe(shutdown_pipe_) < 0) {
     MLOG_ERROR("pipe() failed for shutdown self-pipe, errno={}", errno);
     return;
@@ -99,7 +99,7 @@ AdminServer::AdminServer(const std::string& name) : name_(name) {
   running_.store(true);
   worker_ = std::thread(&AdminServer::ServeLoop, this);
 
-  MLOG_INFO("AdminServer({}) listening on {}", name_, socket_path_);
+  MLOG_INFO("AdminServer({}) listening on {}", role_, socket_path_);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ void AdminServer::Shutdown() {
     return;
   }
 
-  // Wake the serve loop via self-pipe (Ceph pattern)
+  // Wake the serve loop via self-pipe
   if (shutdown_pipe_[1] >= 0) {
     char c = 'x';
     (void)::write(shutdown_pipe_[1], &c, 1);
@@ -139,7 +139,7 @@ void AdminServer::Shutdown() {
   // Remove socket file
   if (!socket_path_.empty()) {
     ::unlink(socket_path_.c_str());
-    MLOG_INFO("AdminServer({}) shut down, unlinked {}", name_, socket_path_);
+    MLOG_INFO("AdminServer({}) shut down, unlinked {}", role_, socket_path_);
   }
 
   handlers_.clear();

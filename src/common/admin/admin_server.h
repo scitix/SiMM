@@ -13,13 +13,13 @@ namespace common {
 
 // UDS-based admin server for CM and DS processes.
 //
-// Modeled after Ceph's AdminSocket: the constructor creates the Unix domain
-// socket, binds, listens, and spawns the serve thread. The destructor shuts
-// down the thread, closes the socket, and unlinks the socket file. There is
-// no explicit Start()/Stop() — lifecycle is tied to object lifetime.
+// The constructor creates the Unix domain socket, binds, listens, and spawns
+// the serve thread. The destructor shuts down the thread, closes the socket,
+// and unlinks the socket file. No explicit Start()/Stop() — lifecycle is
+// tied to object lifetime (RAII).
 //
-// Socket path: /run/simm/simm_<name>.<pid>.sock
-//   e.g. /run/simm/simm_ds-svc-001.12345.sock
+// Socket path: /run/simm/simm_<role>.<pid>.sock
+//   e.g. /run/simm/simm_ds.12345.sock
 //
 // Built-in handlers for GFLAG_LIST/GET/SET and TRACE_TOGGLE are always
 // registered. Additional handlers (e.g. DS_STATUS) can be registered via
@@ -28,9 +28,9 @@ namespace common {
 // Wire protocol: [uint32_t frame_len][uint16_t type][payload]
 class AdminServer {
  public:
-  // name: pod/service name (e.g. "ds-svc-001", "cm-svc-001").
-  // Socket path = /run/simm/simm_<name>.<pid>.sock
-  explicit AdminServer(const std::string& name);
+  // role: "cm" or "ds".
+  // Socket path = /run/simm/simm_<role>.<pid>.sock
+  explicit AdminServer(const std::string& role);
   ~AdminServer();
 
   AdminServer(const AdminServer&) = delete;
@@ -60,7 +60,7 @@ class AdminServer {
   static bool ReadExact(int fd, void* buf, size_t len);
   void SendResponse(int client_fd, AdminMsgType type, const std::string& serialized_resp);
 
-  std::string name_;
+  std::string role_;
   std::string socket_path_;
   int listen_fd_{-1};
   int shutdown_pipe_[2]{-1, -1};   // self-pipe for clean shutdown

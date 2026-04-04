@@ -246,83 +246,81 @@ class ClusterObserver:
         """Get LogParser for a specific DS by its addr_str."""
         return self._ds_logs.get(node_addr)
 
-    def get_ds_status(self, admin_name: str, ds_pid: int) -> dict[str, str]:
+    def get_ds_status(self, ds_pid: int) -> dict[str, str]:
         """Query DS internal status via UDS admin (simm_ctl_admin --pid <PID> ds status).
         Returns {"is_registered": "true/false", "cm_ready": "true/false",
                  "heartbeat_failure_count": "N"}.
         """
         try:
-            return self._admin.get_ds_status(admin_name, ds_pid)
+            return self._admin.get_ds_status(ds_pid)
         except AdminClientError:
             return {}
 
-    def assert_ds_is_registered(self, admin_name: str, ds_pid: int) -> None:
+    def assert_ds_is_registered(self, ds_pid: int) -> None:
         """Assert DS reports itself as registered with CM."""
-        status = self.get_ds_status(admin_name, ds_pid)
+        status = self.get_ds_status(ds_pid)
         assert status.get("is_registered") == "true", (
-            f"DS {admin_name} pid={ds_pid} is_registered={status.get('is_registered')}, "
+            f"DS pid={ds_pid} is_registered={status.get('is_registered')}, "
             f"expected true"
         )
 
-    def assert_ds_cm_ready(self, admin_name: str, ds_pid: int, expected: bool = True) -> None:
+    def assert_ds_cm_ready(self, ds_pid: int, expected: bool = True) -> None:
         """Assert DS's cm_ready flag matches expected value."""
-        status = self.get_ds_status(admin_name, ds_pid)
+        status = self.get_ds_status(ds_pid)
         expected_str = "true" if expected else "false"
         assert status.get("cm_ready") == expected_str, (
-            f"DS {admin_name} pid={ds_pid} cm_ready={status.get('cm_ready')}, "
+            f"DS pid={ds_pid} cm_ready={status.get('cm_ready')}, "
             f"expected {expected_str}"
         )
 
     def assert_ds_heartbeat_failure_count(
-        self, admin_name: str, ds_pid: int, min_count: int = 0,
+        self, ds_pid: int, min_count: int = 0,
         max_count: int | None = None
     ) -> None:
         """Assert DS heartbeat_failure_count within expected range."""
-        status = self.get_ds_status(admin_name, ds_pid)
+        status = self.get_ds_status(ds_pid)
         count_str = status.get("heartbeat_failure_count", "0")
         count = int(count_str)
         if min_count > 0:
             assert count >= min_count, (
-                f"DS {admin_name} pid={ds_pid} heartbeat_failure_count={count}, "
+                f"DS pid={ds_pid} heartbeat_failure_count={count}, "
                 f"expected >= {min_count}"
             )
         if max_count is not None:
             assert count <= max_count, (
-                f"DS {admin_name} pid={ds_pid} heartbeat_failure_count={count}, "
+                f"DS pid={ds_pid} heartbeat_failure_count={count}, "
                 f"expected <= {max_count}"
             )
 
     def wait_for_ds_cm_not_ready(
-        self, admin_name: str, ds_pid: int,
+        self, ds_pid: int,
         timeout: float = 60, poll_interval: float = 1.0
     ) -> bool:
         """Wait until DS reports cm_ready=false (detected CM failure)."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            status = self.get_ds_status(admin_name, ds_pid)
+            status = self.get_ds_status(ds_pid)
             if status.get("cm_ready") == "false":
-                logger.info("DS %s pid=%d reports cm_ready=false", admin_name, ds_pid)
+                logger.info("DS pid=%d reports cm_ready=false", ds_pid)
                 return True
             time.sleep(poll_interval)
-        logger.warning("Timed out waiting for DS %s pid=%d cm_ready=false",
-                        admin_name, ds_pid)
+        logger.warning("Timed out waiting for DS pid=%d cm_ready=false", ds_pid)
         return False
 
     def wait_for_ds_registered(
-        self, admin_name: str, ds_pid: int,
+        self, ds_pid: int,
         timeout: float = 60, poll_interval: float = 1.0
     ) -> bool:
         """Wait until DS reports is_registered=true and cm_ready=true."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            status = self.get_ds_status(admin_name, ds_pid)
+            status = self.get_ds_status(ds_pid)
             if (status.get("is_registered") == "true"
                     and status.get("cm_ready") == "true"):
-                logger.info("DS %s pid=%d registered and cm_ready", admin_name, ds_pid)
+                logger.info("DS pid=%d registered and cm_ready", ds_pid)
                 return True
             time.sleep(poll_interval)
-        logger.warning("Timed out waiting for DS %s pid=%d registration",
-                        admin_name, ds_pid)
+        logger.warning("Timed out waiting for DS pid=%d registration", ds_pid)
         return False
 
     def get_shard_distribution_for_node(self, node_addr: str) -> int:

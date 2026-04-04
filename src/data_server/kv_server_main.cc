@@ -68,14 +68,6 @@ void signalHandler(int signal) {
   quitPorcess.store(true);
 }
 
-// Resolve the admin server name from POD_NAME env or fallback to "ds"
-static std::string ResolveAdminName() {
-  const char* pod_name = ::getenv("POD_NAME");
-  if (pod_name && std::strlen(pod_name) > 0) {
-    return pod_name;
-  }
-  return "ds";
-}
 
 int main(int argc, char *argv[]) {
   // init dependencies
@@ -108,7 +100,7 @@ int main(int argc, char *argv[]) {
   // Init AdminServer early — before signal handlers and KVRpcService.
   // Constructor creates UDS socket, binds, listens, and spawns serve thread.
   // Destructor handles shutdown (join thread, close fd, unlink socket).
-  auto admin_server = std::make_unique<simm::common::AdminServer>(ResolveAdminName());
+  auto admin_server = std::make_unique<simm::common::AdminServer>("ds");
 
   // Register signal handlers and save previous ones
   MLOG_INFO("Register signal handers...");

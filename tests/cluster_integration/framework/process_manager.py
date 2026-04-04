@@ -33,7 +33,6 @@ class ProcessHandle:
     cmd_args: list[str] = field(default_factory=list)  # for restart
     extra_flags: dict = field(default_factory=dict)
     build_dir: str = ""                 # binary dir on the target host
-    admin_name: str = ""                # pod name for UDS admin socket
 
     @property
     def addr_str(self) -> str:
@@ -72,7 +71,6 @@ class ProcessManager:
         shard_total_num: int = 64,
         cm_deferred_reshard_enabled: bool = True,
         cm_deferred_reshard_window_inSecs: int = 120,
-        admin_name: str = "cm",
         extra_flags: dict | None = None,
     ) -> ProcessHandle:
         if ip is None:
@@ -126,7 +124,6 @@ class ProcessManager:
             cmd_args=cmd_parts,
             extra_flags=extra_flags or {},
             build_dir=build_dir,
-            admin_name=admin_name,
         )
         self._handles.append(handle)
         logger.info("CM started on %s: pid=%d ports=%s", host, pid, ports)
@@ -200,7 +197,6 @@ class ProcessManager:
             cmd_args=cmd_parts,
             extra_flags=extra_flags or {},
             build_dir=build_dir,
-            admin_name=ds_logical_node_id or "ds",
         )
         self._handles.append(handle)
         logger.info("DS[%d] started on %s: pid=%d ports=%s", idx, host, pid, ports)
@@ -281,7 +277,6 @@ class ProcessManager:
             cmd_args=handle.cmd_args,
             extra_flags=handle.extra_flags,
             build_dir=handle.build_dir,
-            admin_name=handle.admin_name,
         )
         self._handles.append(new_handle)
         logger.info("%s[%d] restarted on %s: pid=%d",

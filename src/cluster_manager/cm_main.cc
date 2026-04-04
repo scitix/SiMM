@@ -51,14 +51,6 @@ void segfaultHandler([[maybe_unused]] int signal) {
   abort();
 }
 
-// Resolve the admin server name from POD_NAME env or fallback to "cm"
-static std::string ResolveAdminName() {
-  const char* pod_name = ::getenv("POD_NAME");
-  if (pod_name && std::strlen(pod_name) > 0) {
-    return pod_name;
-  }
-  return "cm";
-}
 
 int main(int argc, char *argv[]) {
   // init thirdparty modules
@@ -93,7 +85,7 @@ int main(int argc, char *argv[]) {
   // Init AdminServer early — before signal handlers and cmService.
   // Constructor creates UDS socket, binds, listens, and spawns serve thread.
   // Destructor handles shutdown (join thread, close fd, unlink socket).
-  auto admin_server = std::make_unique<simm::common::AdminServer>(ResolveAdminName());
+  auto admin_server = std::make_unique<simm::common::AdminServer>("cm");
 
   // Register signal handlers
   MLOG_INFO("Register signal handers for SIGINT/SIGTERM/SIGSEGV");
