@@ -9,11 +9,11 @@ Example multi-machine YAML:
       hosts:
         cm:
           ip: "10.0.0.1"
-          build_dir: "/opt/simm/build/release/bin"
+          binary_dir: "/opt/simm/build/release/bin"
           log_dir: "/tmp/simm_test_logs"
         ds:
           - ip: "10.0.0.2"
-            build_dir: "/opt/simm/build/release/bin"
+            binary_dir: "/opt/simm/build/release/bin"
           - ip: "10.0.0.3"
           - ip: "10.0.0.4"
       ssh:
@@ -106,7 +106,7 @@ def has_root():
 
 
 @pytest.fixture(scope="session")
-def build_dir():
+def binary_dir():
     """Resolve the build directory containing SiMM binaries (for local/single-machine)."""
     env_dir = os.environ.get("SIMM_BUILD_DIR")
     if env_dir:
@@ -123,19 +123,19 @@ def build_dir():
 
     # In multi-machine mode, binaries may only exist on remote hosts
     if os.environ.get("SIMM_CLUSTER_CONFIG"):
-        return Path("/dev/null")  # placeholder — cluster.py uses per-host build_dir
+        return Path("/dev/null")  # placeholder — cluster.py uses per-host binary_dir
 
     pytest.skip("SiMM binaries not found. Set SIMM_BUILD_DIR or build with ./build.sh")
 
 
 @pytest.fixture
-def cluster_small(tmp_path, build_dir):
+def cluster_small(tmp_path, binary_dir):
     """1 CM + 3 DS cluster with fast heartbeats."""
     config = _make_config(num_ds=3, shard_total_num=64)
     cluster = SimmCluster(
         config,
         log_dir=tmp_path / "logs" if not config.cm_host else None,
-        build_dir=build_dir if not config.cm_host else None,
+        binary_dir=binary_dir if not config.cm_host else None,
     )
     cluster.start()
     cluster.wait_ready()
@@ -144,13 +144,13 @@ def cluster_small(tmp_path, build_dir):
 
 
 @pytest.fixture
-def cluster_medium(tmp_path, build_dir):
+def cluster_medium(tmp_path, binary_dir):
     """1 CM + 6 DS cluster."""
     config = _make_config(num_ds=6, grace_period_sec=8)
     cluster = SimmCluster(
         config,
         log_dir=tmp_path / "logs" if not config.cm_host else None,
-        build_dir=build_dir if not config.cm_host else None,
+        binary_dir=binary_dir if not config.cm_host else None,
     )
     cluster.start()
     cluster.wait_ready()
@@ -159,7 +159,7 @@ def cluster_medium(tmp_path, build_dir):
 
 
 @pytest.fixture
-def cluster_from_config(tmp_path, build_dir):
+def cluster_from_config(tmp_path, binary_dir):
     """
     Factory fixture: creates a cluster from a custom ClusterConfig.
     Usage:
@@ -172,7 +172,7 @@ def cluster_from_config(tmp_path, build_dir):
         cluster = SimmCluster(
             config,
             log_dir=tmp_path / "logs" if not config.cm_host else None,
-            build_dir=build_dir if not config.cm_host else None,
+            binary_dir=binary_dir if not config.cm_host else None,
         )
         cluster.start()
         cluster.wait_ready()

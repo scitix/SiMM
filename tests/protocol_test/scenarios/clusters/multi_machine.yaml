@@ -5,7 +5,7 @@
 #   pytest tests/ -v --timeout=120
 #
 # The test runner (node A) must have passwordless SSH access to all listed hosts.
-# SiMM binaries must be pre-built at the specified build_dir on each host.
+# SiMM binaries must be pre-built at the specified binary_dir on each host.
 
 cluster:
   build_mode: release
@@ -14,17 +14,17 @@ cluster:
   hosts:
     cm:
       ip: "10.0.0.1"
-      build_dir: "/opt/simm/build/release/bin"
+      binary_dir: "/opt/simm/build/release/bin"
       log_dir: "/tmp/simm_test_logs"
     ds:
       - ip: "10.0.0.2"
-        build_dir: "/opt/simm/build/release/bin"
+        binary_dir: "/opt/simm/build/release/bin"
         log_dir: "/tmp/simm_test_logs"
       - ip: "10.0.0.3"
-        build_dir: "/opt/simm/build/release/bin"
+        binary_dir: "/opt/simm/build/release/bin"
         log_dir: "/tmp/simm_test_logs"
       - ip: "10.0.0.4"
-        build_dir: "/opt/simm/build/release/bin"
+        binary_dir: "/opt/simm/build/release/bin"
         log_dir: "/tmp/simm_test_logs"
 
   ssh:

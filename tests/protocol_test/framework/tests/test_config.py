@@ -167,7 +167,7 @@ class TestDictToClusterConfig:
         data = {
             "cluster": {
                 "hosts": {
-                    "cm": {"ip": "10.0.0.1", "build_dir": "/opt/bin"},
+                    "cm": {"ip": "10.0.0.1", "binary_dir": "/opt/bin"},
                     "ds": [
                         {"ip": "10.0.0.2"},
                         {"ip": "10.0.0.3", "log_dir": "/var/log"},
@@ -178,7 +178,7 @@ class TestDictToClusterConfig:
         config = dict_to_cluster_config(data)
         assert config.cm_host is not None
         assert config.cm_host.ip == "10.0.0.1"
-        assert config.cm_host.build_dir == "/opt/bin"
+        assert config.cm_host.binary_dir == "/opt/bin"
         assert len(config.ds_hosts) == 2
         assert config.ds_hosts[0].ip == "10.0.0.2"
         assert config.ds_hosts[0].log_dir == "/tmp/simm_test_logs"  # default

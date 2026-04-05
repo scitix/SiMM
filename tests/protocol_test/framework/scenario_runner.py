@@ -247,8 +247,8 @@ class ScenarioRunner:
         runner.run(cluster_config, fault_configs, validation_steps)
     """
 
-    def __init__(self, build_dir: str | None = None, log_dir: str | None = None):
-        self._build_dir = build_dir
+    def __init__(self, binary_dir: str | None = None, log_dir: str | None = None):
+        self._binary_dir = binary_dir
         self._log_dir = log_dir
 
     def run_scenario(self, *yaml_paths: str | Path) -> None:
@@ -271,7 +271,7 @@ class ScenarioRunner:
         cluster = SimmCluster(
             cluster_config,
             log_dir=self._log_dir,
-            build_dir=self._build_dir,
+            binary_dir=self._binary_dir,
         )
 
         try:

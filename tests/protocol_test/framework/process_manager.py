@@ -32,7 +32,7 @@ class ProcessHandle:
     start_time: float
     cmd_args: list[str] = field(default_factory=list)  # for restart
     extra_flags: dict = field(default_factory=dict)
-    build_dir: str = ""                 # binary dir on the target host
+    binary_dir: str = ""                # binary dir on the target host
 
     @property
     def addr_str(self) -> str:
@@ -45,25 +45,53 @@ class ProcessHandle:
 class ProcessManager:
     """Manages CM and DS process lifecycle across local and remote hosts."""
 
-    def __init__(self, default_build_dir: str, default_log_dir: str,
+    def __init__(self, default_binary_dir: str, default_log_dir: str,
                  port_allocator: PortAllocator, ssh_executor: SshExecutor):
-        self._default_build_dir = str(default_build_dir)
+        self._default_binary_dir = str(default_binary_dir)
         self._default_log_dir = str(default_log_dir)
         self._port_allocator = port_allocator
         self._ssh = ssh_executor
         self._handles: list[ProcessHandle] = []
         self._ds_index = 0
 
-    def _resolve_binary(self, build_dir: str, name: str) -> str:
+    def _resolve_binary(self, binary_dir: str, name: str) -> str:
         """Return full path to a binary on the target host."""
-        return f"{build_dir}/{name}"
+        return f"{binary_dir}/{name}"
+
+    def kill_existing_by_name(self, host: str, name: str) -> int:
+        """Find and kill all processes matching binary name on host.
+
+        Returns the number of processes killed.
+        """
+        # Get PIDs of matching processes (exclude grep itself)
+        result = self._ssh.run(
+            host,
+            f"pgrep -x {name}",
+            timeout=5, check=False,
+        )
+        if not result or not result.strip():
+            return 0
+
+        pids = [int(p) for p in result.strip().split("\n") if p.strip()]
+        for pid in pids:
+            self._ssh.send_signal(host, pid, signal.SIGKILL)
+            logger.info("Killed existing %s (pid=%d) on %s", name, pid, host)
+
+        # Wait briefly for all to die
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if all(not self._ssh.is_process_alive(host, p) for p in pids):
+                break
+            time.sleep(0.5)
+
+        return len(pids)
 
     def start_cluster_manager(
         self,
         host: str = "127.0.0.1",
         ip: str | None = None,
         ports: dict[str, int] | None = None,
-        build_dir: str | None = None,
+        binary_dir: str | None = None,
         log_dir: str | None = None,
         cm_cluster_init_grace_period_inSecs: int = 5,
         cm_heartbeat_timeout_inSecs: int = 10,
@@ -75,7 +103,7 @@ class ProcessManager:
     ) -> ProcessHandle:
         if ip is None:
             ip = host
-        build_dir = build_dir or self._default_build_dir
+        binary_dir = binary_dir or self._default_binary_dir
         log_dir = log_dir or self._default_log_dir
 
         if ports is None:
@@ -83,7 +111,7 @@ class ProcessManager:
 
         log_path = f"{log_dir}/cm.log"
         default_log_path = f"{log_dir}/cm_default.log"
-        cm_binary = self._resolve_binary(build_dir, "cluster_manager")
+        cm_binary = self._resolve_binary(binary_dir, "cluster_manager")
 
         cmd_parts = [
             cm_binary,
@@ -123,7 +151,7 @@ class ProcessManager:
             start_time=time.time(),
             cmd_args=cmd_parts,
             extra_flags=extra_flags or {},
-            build_dir=build_dir,
+            binary_dir=binary_dir,
         )
         self._handles.append(handle)
         logger.info("CM started on %s: pid=%d ports=%s", host, pid, ports)
@@ -136,7 +164,7 @@ class ProcessManager:
         host: str = "127.0.0.1",
         ip: str | None = None,
         ports: dict[str, int] | None = None,
-        build_dir: str | None = None,
+        binary_dir: str | None = None,
         log_dir: str | None = None,
         heartbeat_cooldown_sec: int = 2,
         register_cooldown_sec: int = 2,
@@ -148,7 +176,7 @@ class ProcessManager:
     ) -> ProcessHandle:
         if ip is None:
             ip = host
-        build_dir = build_dir or self._default_build_dir
+        binary_dir = binary_dir or self._default_binary_dir
         log_dir = log_dir or self._default_log_dir
 
         if ports is None:
@@ -159,7 +187,7 @@ class ProcessManager:
 
         log_path = f"{log_dir}/ds_{idx}.log"
         default_log_path = f"{log_dir}/ds_{idx}_default.log"
-        ds_binary = self._resolve_binary(build_dir, "data_server")
+        ds_binary = self._resolve_binary(binary_dir, "data_server")
 
         cmd_parts = [
             ds_binary,
@@ -200,7 +228,7 @@ class ProcessManager:
             start_time=time.time(),
             cmd_args=cmd_parts,
             extra_flags=extra_flags or {},
-            build_dir=build_dir,
+            binary_dir=binary_dir,
         )
         self._handles.append(handle)
         logger.info("DS[%d] started on %s: pid=%d ports=%s", idx, host, pid, ports)
@@ -280,7 +308,7 @@ class ProcessManager:
             start_time=time.time(),
             cmd_args=handle.cmd_args,
             extra_flags=handle.extra_flags,
-            build_dir=handle.build_dir,
+            binary_dir=handle.binary_dir,
         )
         self._handles.append(new_handle)
         logger.info("%s[%d] restarted on %s: pid=%d",

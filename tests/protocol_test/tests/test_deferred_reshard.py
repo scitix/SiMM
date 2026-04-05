@@ -43,10 +43,10 @@ def _make_deferred_reshard_config(
 
 
 @pytest.fixture
-def cluster_deferred(tmp_path, build_dir):
+def cluster_deferred(tmp_path, binary_dir):
     """Cluster with deferred reshard enabled, short timeouts for fast testing."""
     config = _make_deferred_reshard_config(cm_deferred_reshard_window_inSecs=30)
-    cluster = SimmCluster(config, log_dir=tmp_path / "logs", build_dir=build_dir)
+    cluster = SimmCluster(config, log_dir=tmp_path / "logs", binary_dir=binary_dir)
     cluster.start()
     cluster.wait_ready()
     yield cluster
@@ -54,10 +54,10 @@ def cluster_deferred(tmp_path, build_dir):
 
 
 @pytest.fixture
-def cluster_deferred_short_window(tmp_path, build_dir):
+def cluster_deferred_short_window(tmp_path, binary_dir):
     """Cluster with very short deferred reshard window (10s) to test timeout degradation."""
     config = _make_deferred_reshard_config(cm_deferred_reshard_window_inSecs=10)
-    cluster = SimmCluster(config, log_dir=tmp_path / "logs", build_dir=build_dir)
+    cluster = SimmCluster(config, log_dir=tmp_path / "logs", binary_dir=binary_dir)
     cluster.start()
     cluster.wait_ready()
     yield cluster
@@ -65,11 +65,11 @@ def cluster_deferred_short_window(tmp_path, build_dir):
 
 
 @pytest.fixture
-def cluster_deferred_disabled(tmp_path, build_dir):
+def cluster_deferred_disabled(tmp_path, binary_dir):
     """Cluster with deferred reshard disabled — should behave like original."""
     config = _make_deferred_reshard_config()
     config.cm_deferred_reshard_enabled = False
-    cluster = SimmCluster(config, log_dir=tmp_path / "logs", build_dir=build_dir)
+    cluster = SimmCluster(config, log_dir=tmp_path / "logs", binary_dir=binary_dir)
     cluster.start()
     cluster.wait_ready()
     yield cluster

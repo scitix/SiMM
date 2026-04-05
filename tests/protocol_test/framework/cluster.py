@@ -33,7 +33,7 @@ class SimmCluster:
     """
 
     def __init__(self, config: ClusterConfig, log_dir: str | Path | None = None,
-                 build_dir: str | Path | None = None):
+                 binary_dir: str | Path | None = None):
         self.config = config
 
         # Initialize SSH executor
@@ -41,37 +41,43 @@ class SimmCluster:
         self._ssh = SshExecutor(ssh_config=ssh_config)
         self._is_multi_machine = config.cm_host is not None
 
-        # Determine default build_dir and log_dir
-        if build_dir is not None:
-            default_build_dir = str(build_dir)
+        # Determine default binary_dir — priority:
+        #   1. YAML config.binary_dir (highest)
+        #   2. Constructor parameter
+        #   3. SIMM_BUILD_DIR env var
+        #   4. Derive from source tree + build_mode (lowest)
+        if config.binary_dir:
+            default_binary_dir = config.binary_dir
+        elif binary_dir is not None:
+            default_binary_dir = str(binary_dir)
         elif os.environ.get("SIMM_BUILD_DIR"):
-            default_build_dir = os.environ["SIMM_BUILD_DIR"]
+            default_binary_dir = os.environ["SIMM_BUILD_DIR"]
         else:
             simm_root = Path(__file__).parents[3]
-            default_build_dir = str(simm_root / "build" / config.build_mode / "bin")
+            default_binary_dir = str(simm_root / "build" / config.build_mode / "bin")
 
         if log_dir is not None:
             default_log_dir = str(log_dir)
         else:
             default_log_dir = "/tmp/simm_test_logs"
 
-        self._default_build_dir = default_build_dir
+        self._default_binary_dir = default_binary_dir
         self._default_log_dir = default_log_dir
 
         # Validate binaries exist (check on local for single-machine,
         # or on remote hosts for multi-machine)
         if not self._is_multi_machine:
             for binary in ["cluster_manager", "data_server"]:
-                p = Path(default_build_dir) / binary
+                p = Path(default_binary_dir) / binary
                 if not p.exists():
                     raise FileNotFoundError(
-                        f"Binary '{binary}' not found at {default_build_dir}. "
+                        f"Binary '{binary}' not found at {default_binary_dir}. "
                         f"Build with: ./build.sh --mode={config.build_mode}"
                     )
 
         self._port_allocator = PortAllocator(ssh_executor=self._ssh)
         self._process_manager = ProcessManager(
-            default_build_dir, default_log_dir,
+            default_binary_dir, default_log_dir,
             self._port_allocator, self._ssh,
         )
 
@@ -79,8 +85,8 @@ class SimmCluster:
         self._use_rpc = not os.environ.get("SIMM_TEST_NO_RDMA")
 
         # Admin client — runs locally, connects to remote nodes via RPC
-        ctl_bin = Path(default_build_dir) / "simm_ctl_admin"
-        flags_bin = Path(default_build_dir) / "simm_flags_admin"
+        ctl_bin = Path(default_binary_dir) / "simm_ctl_admin"
+        flags_bin = Path(default_binary_dir) / "simm_flags_admin"
         self._admin_client = AdminClient(ctl_bin, flags_bin)
 
         # State
@@ -108,8 +114,30 @@ class SimmCluster:
                     )
         logger.info("SSH connectivity verified for %d hosts", len(hosts_to_check))
 
+    def _kill_existing_processes(self) -> None:
+        """Kill any existing CM/DS processes on all target hosts before starting."""
+        hosts = set()
+        if self._is_multi_machine:
+            if self.config.cm_host:
+                hosts.add(self.config.cm_host.ip)
+            for dh in self.config.ds_hosts:
+                hosts.add(dh.ip)
+        else:
+            hosts.add("127.0.0.1")
+
+        total_killed = 0
+        for host in hosts:
+            for binary in ["cluster_manager", "data_server"]:
+                n = self._process_manager.kill_existing_by_name(host, binary)
+                total_killed += n
+
+        if total_killed > 0:
+            logger.info("Killed %d existing SiMM process(es) before start", total_killed)
+
     def start(self) -> None:
-        """Start CM, then start all DS (on local or remote hosts)."""
+        """Kill existing CM/DS, then start fresh with test parameters."""
+        self._kill_existing_processes()
+
         if self._is_multi_machine:
             self._verify_ssh_connectivity()
             self._start_multi_machine()
@@ -142,7 +170,7 @@ class SimmCluster:
 
         self.cm = self._process_manager.start_cluster_manager(
             host="127.0.0.1",
-            build_dir=self._default_build_dir,
+            binary_dir=self._default_binary_dir,
             log_dir=self._default_log_dir,
             cm_cluster_init_grace_period_inSecs=self.config.cm_cluster_init_grace_period_inSecs,
             cm_heartbeat_timeout_inSecs=self.config.cm_heartbeat_timeout_inSecs,
@@ -160,7 +188,7 @@ class SimmCluster:
                 cm_ip=self.cm.ip,
                 cm_inter_port=self.cm.ports["inter"],
                 host="127.0.0.1",
-                build_dir=self._default_build_dir,
+                binary_dir=self._default_binary_dir,
                 log_dir=self._default_log_dir,
                 heartbeat_cooldown_sec=self.config.heartbeat_cooldown_sec,
                 register_cooldown_sec=self.config.register_cooldown_sec,
@@ -184,7 +212,7 @@ class SimmCluster:
         self.cm = self._process_manager.start_cluster_manager(
             host=cm_host.ip,
             ip=cm_host.ip,
-            build_dir=cm_host.build_dir or self._default_build_dir,
+            binary_dir=cm_host.binary_dir or self._default_binary_dir,
             log_dir=cm_host.log_dir,
             cm_cluster_init_grace_period_inSecs=self.config.cm_cluster_init_grace_period_inSecs,
             cm_heartbeat_timeout_inSecs=self.config.cm_heartbeat_timeout_inSecs,
@@ -205,7 +233,7 @@ class SimmCluster:
                 cm_inter_port=self.cm.ports["inter"],
                 host=host_cfg.ip,
                 ip=host_cfg.ip,
-                build_dir=host_cfg.build_dir or self._default_build_dir,
+                binary_dir=host_cfg.binary_dir or self._default_binary_dir,
                 log_dir=host_cfg.log_dir,
                 heartbeat_cooldown_sec=self.config.heartbeat_cooldown_sec,
                 register_cooldown_sec=self.config.register_cooldown_sec,
@@ -300,19 +328,19 @@ class SimmCluster:
                 idx = len(self.data_servers) % len(self.config.ds_hosts)
                 host_cfg = self.config.ds_hosts[idx]
                 host = host_cfg.ip
-                build_dir = host_cfg.build_dir or self._default_build_dir
+                binary_dir = host_cfg.binary_dir or self._default_binary_dir
                 log_dir = host_cfg.log_dir
             else:
                 host = "127.0.0.1"
-                build_dir = self._default_build_dir
+                binary_dir = self._default_binary_dir
                 log_dir = self._default_log_dir
         else:
             # Find matching host config
-            build_dir = self._default_build_dir
+            binary_dir = self._default_binary_dir
             log_dir = self._default_log_dir
             for hc in self.config.ds_hosts:
                 if hc.ip == host:
-                    build_dir = hc.build_dir or self._default_build_dir
+                    binary_dir = hc.binary_dir or self._default_binary_dir
                     log_dir = hc.log_dir
                     break
 
@@ -322,7 +350,7 @@ class SimmCluster:
             host=host,
             ip=host,
             ports=ports,
-            build_dir=build_dir,
+            binary_dir=binary_dir,
             log_dir=log_dir,
             heartbeat_cooldown_sec=self.config.heartbeat_cooldown_sec,
             register_cooldown_sec=self.config.register_cooldown_sec,

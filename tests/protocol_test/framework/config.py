@@ -26,7 +26,7 @@ import yaml
 class HostConfig:
     """Configuration for a single host (machine) in the cluster."""
     ip: str
-    build_dir: str = ""
+    binary_dir: str = ""
     log_dir: str = "/tmp/simm_test_logs"
 
 
@@ -57,6 +57,7 @@ class ClusterConfig:
     ds_logical_node_id_prefix: str = "simm-ds"  # test helper: DS-{i} gets "{prefix}-{i}"
 
     # Build
+    binary_dir: str = "/opt/simm/build/release/bin"
     build_mode: str = "release"
 
     # Host topology — None means single-machine mode
@@ -127,7 +128,7 @@ def merge_yaml_files(*paths: Path) -> dict:
 def _parse_host_config(data: dict) -> HostConfig:
     return HostConfig(
         ip=data["ip"],
-        build_dir=data.get("build_dir", ""),
+        binary_dir=data.get("binary_dir", ""),
         log_dir=data.get("log_dir", "/tmp/simm_test_logs"),
     )
 
@@ -161,6 +162,7 @@ def dict_to_cluster_config(data: dict) -> ClusterConfig:
         cm_deferred_reshard_enabled=cm.get("cm_deferred_reshard_enabled", True),
         cm_deferred_reshard_window_inSecs=cm.get("cm_deferred_reshard_window_inSecs", 120),
         ds_logical_node_id_prefix=ds.get("ds_logical_node_id_prefix", "simm-ds"),
+        binary_dir=cluster.get("binary_dir", "/opt/simm/build/release/bin"),
         build_mode=cluster.get("build_mode", "release"),
         cm_host=cm_host,
         ds_hosts=ds_hosts,

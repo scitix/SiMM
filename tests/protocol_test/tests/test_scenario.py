@@ -14,9 +14,9 @@ SCENARIO_DIR = Path(__file__).parents[1] / "scenarios"
 
 
 @pytest.fixture
-def runner(build_dir, tmp_path):
+def runner(binary_dir, tmp_path):
     return ScenarioRunner(
-        build_dir=str(build_dir),
+        binary_dir=str(binary_dir),
         log_dir=str(tmp_path / "logs"),
     )
 
