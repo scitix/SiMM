@@ -11,7 +11,7 @@
 namespace simm {
 namespace common {
 
-// UDS-based admin server for CM and DS processes.
+// UDS-based admin server for SiMM components.
 //
 // The constructor creates the Unix domain socket, binds, listens, and spawns
 // the serve thread. The destructor shuts down the thread, closes the socket,

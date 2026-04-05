@@ -96,7 +96,7 @@ int main(int argc, char *argv[]) {
   // TODO: load configuration file
 
   auto admin_server = std::make_unique<simm::common::AdminServer>("/run/simm/simm_ds");
-  if (!admin_server->isRunning()) {
+  if (admin_server == nullptr || !admin_server->isRunning()) {
     MLOG_ERROR("Failed to init AdminServer");
     return -1;
   }

@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-AdminServer is a UDS (Unix Domain Socket) based admin interface embedded in CM and DS processes. It provides a local channel for querying process-internal state (gflags, trace, DS heartbeat status, etc.) without going through the RDMA-based SiCL RPC stack.
+AdminServer is a UDS (Unix Domain Socket) based admin interface embedded in SiMM components. It provides a local channel for querying process-internal state (gflags, trace, DS heartbeat status, etc.) without going through the RDMA-based SiCL RPC stack.
 
 The design uses RAII lifecycle, self-pipe shutdown, and handler registration by the owning service.
 
@@ -143,7 +143,7 @@ void AdminServer::Shutdown() {
 
 ### Built-in Handlers
 
-Registered automatically in the constructor. Available for all processes (CM and DS):
+Registered automatically in the constructor. Available for all SiMM components:
 
 | Type | Request PB | Response PB | Source |
 |------|-----------|------------|--------|
@@ -263,10 +263,10 @@ Output:
 | Location | `src/common/trace/` | `src/common/admin/` |
 | Socket path | `/run/simm/simm_trace.<pid>.sock` | `/run/simm/simm_<role>.<pid>.sock` |
 | Dispatch | `switch` hardcoded in `serveLoop` | `handlers_` map, external registration |
-| Used by | Client only | CM and DS |
+| Used by | Client only | All SiMM components |
 | Shutdown | Manual `stop()` in destructor | Self-pipe + RAII destructor |
 
-TraceServer continues to serve the Client process. AdminServer is used by CM and DS. They share the same wire protocol and `AdminMsgType` enum, so `simm_ctl_admin` can talk to both.
+TraceServer continues to serve the Client process. AdminServer is used by all SiMM components. They share the same wire protocol and `AdminMsgType` enum, so `simm_ctl_admin` can talk to both.
 
 ### vs Admin RPC Service (`admin_rpc_service_`)
 

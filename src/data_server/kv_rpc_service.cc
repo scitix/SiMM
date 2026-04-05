@@ -802,7 +802,7 @@ void KVRpcService::GetResourceStats(const DataServerResourceRequestPB *req, Data
 }
 
 error_code_t KVRpcService::RegisterAdminHandlers(simm::common::AdminServer* admin_server) {
-  if (!admin_server || !admin_server->isRunning()) {
+  if (admin_server == nullptr || !admin_server->isRunning()) {
     MLOG_ERROR("RegisterAdminHandlers: AdminServer is null or not running");
     return CommonErr::InvalidState;
   }

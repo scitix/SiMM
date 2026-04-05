@@ -72,7 +72,7 @@ class AdminChannel {
 };
 
 // Message type for UDS admin channel
-// Keep in sync with common/admin/admin_msg_types.h
+// XXX: Should keep in sync with common/admin/admin_msg_types.h
 enum class AdminMsgType : uint16_t {
   TRACE_TOGGLE = 1,
   GFLAG_LIST   = 2,

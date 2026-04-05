@@ -28,7 +28,7 @@ namespace simm {
 namespace trace {
 
 // Align UDS message types with admin side
-// Keep in sync with common/admin/admin_msg_types.h
+// XXX: Should keep in sync with common/admin/admin_msg_types.h
 enum class AdminMsgType : uint16_t {
   TRACE_TOGGLE = 1,
   GFLAG_LIST   = 2,

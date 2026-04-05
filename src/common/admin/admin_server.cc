@@ -51,6 +51,9 @@ AdminServer::AdminServer(std::string basePath)
       MLOG_ERROR("mkdir({}) failed, errno={}", dirStr, errno);
       return;
     }
+  } else if (!S_ISDIR(st.st_mode)) {
+    MLOG_ERROR("{} exists but is not a directory", dirStr);
+    return;
   }
 
   // Socket path: <basePath>.<pid>.sock
