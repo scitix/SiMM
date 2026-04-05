@@ -40,13 +40,15 @@ CM has the same structure, with its own socket (`simm_cm.<pid>.sock`) and CM-spe
 ## 4. Socket Naming
 
 ```
-/run/simm/simm_<role>.<pid>.sock
+<basePath>.<pid>.sock
 ```
 
-| Component | `name` source | Example |
-|-----------|--------------|---------|
-| CM | fallback `"cm"` | `/run/simm/simm_cm.12345.sock` |
-| DS | fallback `"ds"` | `/run/simm/simm_ds.67890.sock` |
+Constructor takes a `basePath` parameter (same pattern as TraceServer). The socket path is `<basePath>.<pid>.sock`.
+
+| Component | `basePath` | Example |
+|-----------|-----------|---------|
+| CM | `/run/simm/simm_cm` | `/run/simm/simm_cm.12345.sock` |
+| DS | `/run/simm/simm_ds` | `/run/simm/simm_ds.67890.sock` |
 
 
 ## 5. Wire Protocol
@@ -76,6 +78,7 @@ enum class AdminMsgType : uint16_t {
   GFLAG_GET    = 3,   // get a single gflag value
   GFLAG_SET    = 4,   // set a single gflag value
   DS_STATUS    = 5,   // query DS internal status
+  CM_STATUS    = 6,   // query CM internal status
 };
 ```
 
@@ -88,14 +91,15 @@ AdminServer uses RAII — no explicit `Start()`/`Stop()`.
 ### Construction
 
 ```cpp
-AdminServer::AdminServer(const std::string& role) {
-  // 1. mkdir /run/simm/ if needed
-  // 2. socket_path_ = /run/simm/simm_<role>.<pid>.sock
-  // 3. unlink(socket_path_)  -- remove stale socket
-  // 4. pipe(shutdown_pipe_)  -- self-pipe for clean shutdown
+AdminServer::AdminServer(std::string basePath)
+    : basePath_(std::move(basePath)), listenFd_(-1), running_(false) {
+  // 1. Derive and mkdir base directory from basePath_
+  // 2. socketPath_ = basePath_ + "." + pid + ".sock"
+  // 3. unlink(socketPath_)  -- remove stale socket
+  // 4. pipe(shutdownPipe_)  -- self-pipe for clean shutdown
   // 5. socket(AF_UNIX) + bind() + listen()
   // 6. Register built-in handlers (gflag, trace)
-  // 7. Spawn serve thread
+  // 7. running_ = true, spawn serve thread
 }
 ```
 

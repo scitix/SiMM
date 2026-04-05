@@ -30,15 +30,14 @@ namespace {
 
 class UdsClient {
  public:
-  // Connect to a UDS socket. Returns false on failure.
-  bool Connect(const std::string& socket_path) {
+  bool connect(const std::string& socketPath) {
     fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd_ < 0) return false;
 
     sockaddr_un addr;
     std::memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    std::strncpy(addr.sun_path, socket_path.c_str(), sizeof(addr.sun_path) - 1);
+    std::strncpy(addr.sun_path, socketPath.c_str(), sizeof(addr.sun_path) - 1);
 
     socklen_t len = static_cast<socklen_t>(
         offsetof(sockaddr_un, sun_path) + std::strlen(addr.sun_path));
@@ -51,46 +50,44 @@ class UdsClient {
     return true;
   }
 
-  ~UdsClient() { Close(); }
+  ~UdsClient() { close(); }
 
-  void Close() {
+  void close() {
     if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
   }
 
-  // Send request and receive response.
-  // Returns false on I/O error; on success, populates resp_type and resp_payload.
-  bool SendRequest(AdminMsgType type, const std::string& payload,
-                   uint16_t& resp_type, std::string& resp_payload) {
+  bool sendRequest(AdminMsgType type, const std::string& payload,
+                   uint16_t& respType, std::string& respPayload) {
     if (fd_ < 0) return false;
 
     // Build request frame
-    uint32_t frame_len = static_cast<uint32_t>(sizeof(uint16_t) + payload.size());
-    uint32_t frame_len_net = htonl(frame_len);
-    uint16_t type_net = htons(static_cast<uint16_t>(type));
+    uint32_t frameLen = static_cast<uint32_t>(sizeof(uint16_t) + payload.size());
+    uint32_t frameLenNet = htonl(frameLen);
+    uint16_t typeNet = htons(static_cast<uint16_t>(type));
 
-    if (!WriteAll(&frame_len_net, sizeof(frame_len_net))) return false;
-    if (!WriteAll(&type_net, sizeof(type_net))) return false;
-    if (!payload.empty() && !WriteAll(payload.data(), payload.size())) return false;
+    if (!writeAll(&frameLenNet, sizeof(frameLenNet))) return false;
+    if (!writeAll(&typeNet, sizeof(typeNet))) return false;
+    if (!payload.empty() && !writeAll(payload.data(), payload.size())) return false;
 
     // Read response frame
-    uint32_t resp_len_net = 0;
-    if (!ReadAll(&resp_len_net, sizeof(resp_len_net))) return false;
-    uint32_t resp_len = ntohl(resp_len_net);
-    if (resp_len < sizeof(uint16_t)) return false;
+    uint32_t respLenNet = 0;
+    if (!readAll(&respLenNet, sizeof(respLenNet))) return false;
+    uint32_t respLen = ntohl(respLenNet);
+    if (respLen < sizeof(uint16_t)) return false;
 
-    uint16_t resp_type_net = 0;
-    if (!ReadAll(&resp_type_net, sizeof(resp_type_net))) return false;
-    resp_type = ntohs(resp_type_net);
+    uint16_t respTypeNet = 0;
+    if (!readAll(&respTypeNet, sizeof(respTypeNet))) return false;
+    respType = ntohs(respTypeNet);
 
-    uint32_t payload_len = resp_len - static_cast<uint32_t>(sizeof(uint16_t));
-    resp_payload.resize(payload_len);
-    if (payload_len > 0 && !ReadAll(resp_payload.data(), payload_len)) return false;
+    uint32_t payloadLen = respLen - static_cast<uint32_t>(sizeof(uint16_t));
+    respPayload.resize(payloadLen);
+    if (payloadLen > 0 && !readAll(respPayload.data(), payloadLen)) return false;
 
     return true;
   }
 
  private:
-  bool WriteAll(const void* buf, size_t len) {
+  bool writeAll(const void* buf, size_t len) {
     const char* p = static_cast<const char*>(buf);
     size_t remaining = len;
     while (remaining > 0) {
@@ -102,7 +99,7 @@ class UdsClient {
     return true;
   }
 
-  bool ReadAll(void* buf, size_t len) {
+  bool readAll(void* buf, size_t len) {
     char* p = static_cast<char*>(buf);
     size_t remaining = len;
     while (remaining > 0) {
@@ -124,7 +121,6 @@ class UdsClient {
 class AdminServerTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Ensure /run/simm exists
     ::mkdir("/run/simm", 0777);
   }
 
@@ -132,15 +128,14 @@ class AdminServerTest : public ::testing::Test {
     server_.reset();
   }
 
-  void CreateServer(const std::string& role = "test") {
-    server_ = std::make_unique<AdminServer>(role);
-    // Give the serve thread a moment to start polling
+  void createServer(const std::string& basePath = "/run/simm/simm_test") {
+    server_ = std::make_unique<AdminServer>(basePath);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
-  UdsClient ConnectClient() {
+  UdsClient connectClient() {
     UdsClient client;
-    EXPECT_TRUE(client.Connect(server_->SocketPath()));
+    EXPECT_TRUE(client.connect(server_->socketPath()));
     return client;
   }
 
@@ -152,42 +147,50 @@ class AdminServerTest : public ::testing::Test {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, ConstructionCreatesSocketFile) {
-  CreateServer("test_lifecycle");
+  createServer("/run/simm/simm_lifecycle");
+  EXPECT_TRUE(server_->isRunning());
   struct stat st;
-  EXPECT_EQ(::stat(server_->SocketPath().c_str(), &st), 0);
+  EXPECT_EQ(::stat(server_->socketPath().c_str(), &st), 0);
   EXPECT_TRUE(S_ISSOCK(st.st_mode));
 }
 
 TEST_F(AdminServerTest, SocketPathFormat) {
-  CreateServer("ds");
+  createServer("/run/simm/simm_ds");
   std::string expected = std::string("/run/simm/simm_ds.") +
                          std::to_string(::getpid()) + ".sock";
-  EXPECT_EQ(server_->SocketPath(), expected);
+  EXPECT_EQ(server_->socketPath(), expected);
 }
 
 TEST_F(AdminServerTest, DestructorRemovesSocketFile) {
-  CreateServer("test_cleanup");
-  std::string path = server_->SocketPath();
-  server_.reset();  // trigger destructor
+  createServer("/run/simm/simm_cleanup");
+  std::string path = server_->socketPath();
+  server_.reset();
   struct stat st;
-  EXPECT_NE(::stat(path.c_str(), &st), 0);  // file should be gone
+  EXPECT_NE(::stat(path.c_str(), &st), 0);
 }
 
-TEST_F(AdminServerTest, MultipleServersWithDifferentRoles) {
-  auto server_a = std::make_unique<AdminServer>("testa");
-  auto server_b = std::make_unique<AdminServer>("testb");
-  EXPECT_NE(server_a->SocketPath(), server_b->SocketPath());
+TEST_F(AdminServerTest, MultipleServersWithDifferentBasePaths) {
+  auto serverA = std::make_unique<AdminServer>("/run/simm/simm_testa");
+  auto serverB = std::make_unique<AdminServer>("/run/simm/simm_testb");
+  EXPECT_NE(serverA->socketPath(), serverB->socketPath());
 
   struct stat st;
-  EXPECT_EQ(::stat(server_a->SocketPath().c_str(), &st), 0);
-  EXPECT_EQ(::stat(server_b->SocketPath().c_str(), &st), 0);
+  EXPECT_EQ(::stat(serverA->socketPath().c_str(), &st), 0);
+  EXPECT_EQ(::stat(serverB->socketPath().c_str(), &st), 0);
 
-  std::string path_a = server_a->SocketPath();
-  std::string path_b = server_b->SocketPath();
-  server_a.reset();
-  server_b.reset();
-  EXPECT_NE(::stat(path_a.c_str(), &st), 0);
-  EXPECT_NE(::stat(path_b.c_str(), &st), 0);
+  std::string pathA = serverA->socketPath();
+  std::string pathB = serverB->socketPath();
+  serverA.reset();
+  serverB.reset();
+  EXPECT_NE(::stat(pathA.c_str(), &st), 0);
+  EXPECT_NE(::stat(pathB.c_str(), &st), 0);
+}
+
+TEST_F(AdminServerTest, IsRunningReflectsState) {
+  createServer("/run/simm/simm_running");
+  EXPECT_TRUE(server_->isRunning());
+  server_.reset();
+  // After destruction, no server to check — just verify no crash
 }
 
 // ---------------------------------------------------------------------------
@@ -195,114 +198,111 @@ TEST_F(AdminServerTest, MultipleServersWithDifferentRoles) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, GFlagListReturnsFlags) {
-  CreateServer("test_gflag_list");
-  auto client = ConnectClient();
+  createServer("/run/simm/simm_gflag_list");
+  auto client = connectClient();
 
-  uint16_t resp_type = 0;
-  std::string resp_payload;
-  ASSERT_TRUE(client.SendRequest(AdminMsgType::GFLAG_LIST, "", resp_type, resp_payload));
-  EXPECT_EQ(resp_type, static_cast<uint16_t>(AdminMsgType::GFLAG_LIST));
+  uint16_t respType = 0;
+  std::string respPayload;
+  ASSERT_TRUE(client.sendRequest(AdminMsgType::GFLAG_LIST, "", respType, respPayload));
+  EXPECT_EQ(respType, static_cast<uint16_t>(AdminMsgType::GFLAG_LIST));
 
   proto::common::ListAllGFlagsResponsePB resp;
-  ASSERT_TRUE(resp.ParseFromString(resp_payload));
+  ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::OK);
-  EXPECT_GT(resp.flags_size(), 0);  // gflags always has some flags registered
+  EXPECT_GT(resp.flags_size(), 0);
 }
 
 TEST_F(AdminServerTest, GFlagGetKnownFlag) {
-  CreateServer("test_gflag_get");
+  createServer("/run/simm/simm_gflag_get");
 
-  // Use a well-known gtest flag that always exists
   proto::common::GetGFlagValueRequestPB req;
   req.set_flag_name("gtest_color");
-  std::string req_buf;
-  req.SerializeToString(&req_buf);
+  std::string reqBuf;
+  req.SerializeToString(&reqBuf);
 
-  auto client = ConnectClient();
-  uint16_t resp_type = 0;
-  std::string resp_payload;
-  ASSERT_TRUE(client.SendRequest(AdminMsgType::GFLAG_GET, req_buf, resp_type, resp_payload));
+  auto client = connectClient();
+  uint16_t respType = 0;
+  std::string respPayload;
+  ASSERT_TRUE(client.sendRequest(AdminMsgType::GFLAG_GET, reqBuf, respType, respPayload));
 
   proto::common::GetGFlagValueResponsePB resp;
-  ASSERT_TRUE(resp.ParseFromString(resp_payload));
+  ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::OK);
   EXPECT_EQ(resp.flag_info().flag_name(), "gtest_color");
 }
 
 TEST_F(AdminServerTest, GFlagGetUnknownFlag) {
-  CreateServer("test_gflag_get_unk");
+  createServer("/run/simm/simm_gflag_get_unk");
 
   proto::common::GetGFlagValueRequestPB req;
   req.set_flag_name("nonexistent_flag_12345");
-  std::string req_buf;
-  req.SerializeToString(&req_buf);
+  std::string reqBuf;
+  req.SerializeToString(&reqBuf);
 
-  auto client = ConnectClient();
-  uint16_t resp_type = 0;
-  std::string resp_payload;
-  ASSERT_TRUE(client.SendRequest(AdminMsgType::GFLAG_GET, req_buf, resp_type, resp_payload));
+  auto client = connectClient();
+  uint16_t respType = 0;
+  std::string respPayload;
+  ASSERT_TRUE(client.sendRequest(AdminMsgType::GFLAG_GET, reqBuf, respType, respPayload));
 
   proto::common::GetGFlagValueResponsePB resp;
-  ASSERT_TRUE(resp.ParseFromString(resp_payload));
+  ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::GFlagNotFound);
 }
 
 TEST_F(AdminServerTest, GFlagSetAndVerify) {
-  CreateServer("test_gflag_set");
+  createServer("/run/simm/simm_gflag_set");
 
-  // Set gtest_color to "no"
-  proto::common::SetGFlagValueRequestPB set_req;
-  set_req.set_flag_name("gtest_color");
-  set_req.set_flag_value("no");
-  std::string set_buf;
-  set_req.SerializeToString(&set_buf);
+  proto::common::SetGFlagValueRequestPB setReq;
+  setReq.set_flag_name("gtest_color");
+  setReq.set_flag_value("no");
+  std::string setBuf;
+  setReq.SerializeToString(&setBuf);
 
   {
-    auto client = ConnectClient();
-    uint16_t resp_type = 0;
-    std::string resp_payload;
-    ASSERT_TRUE(client.SendRequest(AdminMsgType::GFLAG_SET, set_buf, resp_type, resp_payload));
+    auto client = connectClient();
+    uint16_t respType = 0;
+    std::string respPayload;
+    ASSERT_TRUE(client.sendRequest(AdminMsgType::GFLAG_SET, setBuf, respType, respPayload));
 
     proto::common::SetGFlagValueResponsePB resp;
-    ASSERT_TRUE(resp.ParseFromString(resp_payload));
+    ASSERT_TRUE(resp.ParseFromString(respPayload));
     EXPECT_EQ(resp.ret_code(), CommonErr::OK);
   }
 
-  // Verify the change via GFLAG_GET
-  proto::common::GetGFlagValueRequestPB get_req;
-  get_req.set_flag_name("gtest_color");
-  std::string get_buf;
-  get_req.SerializeToString(&get_buf);
+  proto::common::GetGFlagValueRequestPB getReq;
+  getReq.set_flag_name("gtest_color");
+  std::string getBuf;
+  getReq.SerializeToString(&getBuf);
 
   {
-    auto client = ConnectClient();
-    uint16_t resp_type = 0;
-    std::string resp_payload;
-    ASSERT_TRUE(client.SendRequest(AdminMsgType::GFLAG_GET, get_buf, resp_type, resp_payload));
+    auto client = connectClient();
+    uint16_t respType = 0;
+    std::string respPayload;
+    ASSERT_TRUE(client.sendRequest(AdminMsgType::GFLAG_GET, getBuf, respType, respPayload));
 
     proto::common::GetGFlagValueResponsePB resp;
-    ASSERT_TRUE(resp.ParseFromString(resp_payload));
+    ASSERT_TRUE(resp.ParseFromString(respPayload));
     EXPECT_EQ(resp.ret_code(), CommonErr::OK);
     EXPECT_EQ(resp.flag_info().flag_value(), "no");
   }
 }
 
 TEST_F(AdminServerTest, GFlagSetNonexistentFlag) {
-  CreateServer("test_gflag_set_unk");
+  createServer("/run/simm/simm_gflag_set_unk");
 
   proto::common::SetGFlagValueRequestPB req;
   req.set_flag_name("nonexistent_flag_12345");
   req.set_flag_value("42");
-  std::string req_buf;
-  req.SerializeToString(&req_buf);
+  std::string reqBuf;
+  req.SerializeToString(&reqBuf);
 
-  auto client = ConnectClient();
-  uint16_t resp_type = 0;
-  std::string resp_payload;
-  ASSERT_TRUE(client.SendRequest(AdminMsgType::GFLAG_SET, req_buf, resp_type, resp_payload));
+  auto client = connectClient();
+  uint16_t respType = 0;
+  std::string respPayload;
+  ASSERT_TRUE(client.sendRequest(AdminMsgType::GFLAG_SET, reqBuf, respType, respPayload));
 
   proto::common::SetGFlagValueResponsePB resp;
-  ASSERT_TRUE(resp.ParseFromString(resp_payload));
+  ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::GFlagNotFound);
 }
 
@@ -311,21 +311,21 @@ TEST_F(AdminServerTest, GFlagSetNonexistentFlag) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, TraceToggle) {
-  CreateServer("test_trace");
+  createServer("/run/simm/simm_trace");
 
   proto::common::TraceToggleRequestPB req;
   req.set_enable_trace(true);
-  std::string req_buf;
-  req.SerializeToString(&req_buf);
+  std::string reqBuf;
+  req.SerializeToString(&reqBuf);
 
-  auto client = ConnectClient();
-  uint16_t resp_type = 0;
-  std::string resp_payload;
-  ASSERT_TRUE(client.SendRequest(AdminMsgType::TRACE_TOGGLE, req_buf, resp_type, resp_payload));
-  EXPECT_EQ(resp_type, static_cast<uint16_t>(AdminMsgType::TRACE_TOGGLE));
+  auto client = connectClient();
+  uint16_t respType = 0;
+  std::string respPayload;
+  ASSERT_TRUE(client.sendRequest(AdminMsgType::TRACE_TOGGLE, reqBuf, respType, respPayload));
+  EXPECT_EQ(respType, static_cast<uint16_t>(AdminMsgType::TRACE_TOGGLE));
 
   proto::common::TraceToggleResponsePB resp;
-  ASSERT_TRUE(resp.ParseFromString(resp_payload));
+  ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::OK);
 }
 
@@ -334,10 +334,9 @@ TEST_F(AdminServerTest, TraceToggle) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, RegisterCustomHandler) {
-  CreateServer("test_custom");
+  createServer("/run/simm/simm_custom");
 
-  // Register a custom DS_STATUS handler
-  server_->RegisterHandler(AdminMsgType::DS_STATUS,
+  server_->registerHandler(AdminMsgType::DS_STATUS,
       [](const std::string& payload) -> std::string {
         proto::common::DsStatusResponsePB resp;
         resp.set_ret_code(CommonErr::OK);
@@ -349,14 +348,14 @@ TEST_F(AdminServerTest, RegisterCustomHandler) {
         return buf;
       });
 
-  auto client = ConnectClient();
-  uint16_t resp_type = 0;
-  std::string resp_payload;
-  ASSERT_TRUE(client.SendRequest(AdminMsgType::DS_STATUS, "", resp_type, resp_payload));
-  EXPECT_EQ(resp_type, static_cast<uint16_t>(AdminMsgType::DS_STATUS));
+  auto client = connectClient();
+  uint16_t respType = 0;
+  std::string respPayload;
+  ASSERT_TRUE(client.sendRequest(AdminMsgType::DS_STATUS, "", respType, respPayload));
+  EXPECT_EQ(respType, static_cast<uint16_t>(AdminMsgType::DS_STATUS));
 
   proto::common::DsStatusResponsePB resp;
-  ASSERT_TRUE(resp.ParseFromString(resp_payload));
+  ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::OK);
   EXPECT_TRUE(resp.is_registered());
   EXPECT_TRUE(resp.cm_ready());
@@ -364,10 +363,9 @@ TEST_F(AdminServerTest, RegisterCustomHandler) {
 }
 
 TEST_F(AdminServerTest, CustomHandlerReceivesPayload) {
-  CreateServer("test_payload");
+  createServer("/run/simm/simm_payload");
 
-  // Register a handler that echoes payload length in a DsStatusResponse
-  server_->RegisterHandler(AdminMsgType::DS_STATUS,
+  server_->registerHandler(AdminMsgType::DS_STATUS,
       [](const std::string& payload) -> std::string {
         proto::common::DsStatusResponsePB resp;
         resp.set_ret_code(CommonErr::OK);
@@ -378,44 +376,41 @@ TEST_F(AdminServerTest, CustomHandlerReceivesPayload) {
       });
 
   proto::common::DsStatusRequestPB req;
-  std::string req_buf;
-  req.SerializeToString(&req_buf);
+  std::string reqBuf;
+  req.SerializeToString(&reqBuf);
 
-  auto client = ConnectClient();
-  uint16_t resp_type = 0;
-  std::string resp_payload;
-  ASSERT_TRUE(client.SendRequest(AdminMsgType::DS_STATUS, req_buf, resp_type, resp_payload));
+  auto client = connectClient();
+  uint16_t respType = 0;
+  std::string respPayload;
+  ASSERT_TRUE(client.sendRequest(AdminMsgType::DS_STATUS, reqBuf, respType, respPayload));
 
   proto::common::DsStatusResponsePB resp;
-  ASSERT_TRUE(resp.ParseFromString(resp_payload));
+  ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::OK);
-  // DsStatusRequestPB serializes to 0 bytes (empty message)
   EXPECT_EQ(resp.heartbeat_failure_count(), 0u);
 }
 
 TEST_F(AdminServerTest, OverrideBuiltinHandler) {
-  CreateServer("test_override");
+  createServer("/run/simm/simm_override");
 
-  // Override the built-in GFLAG_LIST handler with a custom one
-  server_->RegisterHandler(AdminMsgType::GFLAG_LIST,
+  server_->registerHandler(AdminMsgType::GFLAG_LIST,
       [](const std::string& /*payload*/) -> std::string {
         proto::common::ListAllGFlagsResponsePB resp;
         resp.set_ret_code(CommonErr::OK);
-        // Return an empty flag list instead of real flags
         std::string buf;
         resp.SerializeToString(&buf);
         return buf;
       });
 
-  auto client = ConnectClient();
-  uint16_t resp_type = 0;
-  std::string resp_payload;
-  ASSERT_TRUE(client.SendRequest(AdminMsgType::GFLAG_LIST, "", resp_type, resp_payload));
+  auto client = connectClient();
+  uint16_t respType = 0;
+  std::string respPayload;
+  ASSERT_TRUE(client.sendRequest(AdminMsgType::GFLAG_LIST, "", respType, respPayload));
 
   proto::common::ListAllGFlagsResponsePB resp;
-  ASSERT_TRUE(resp.ParseFromString(resp_payload));
+  ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::OK);
-  EXPECT_EQ(resp.flags_size(), 0);  // custom handler returns empty list
+  EXPECT_EQ(resp.flags_size(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -423,11 +418,7 @@ TEST_F(AdminServerTest, OverrideBuiltinHandler) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, UnregisteredMsgTypeNoResponse) {
-  CreateServer("test_unknown_type");
-
-  // Send a message type that has no handler (raw value 999)
-  UdsClient client;
-  ASSERT_TRUE(client.Connect(server_->SocketPath()));
+  createServer("/run/simm/simm_unknown_type");
 
   int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
   ASSERT_GE(fd, 0);
@@ -435,29 +426,26 @@ TEST_F(AdminServerTest, UnregisteredMsgTypeNoResponse) {
   sockaddr_un addr;
   std::memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  std::strncpy(addr.sun_path, server_->SocketPath().c_str(), sizeof(addr.sun_path) - 1);
-  socklen_t addr_len = static_cast<socklen_t>(
+  std::strncpy(addr.sun_path, server_->socketPath().c_str(), sizeof(addr.sun_path) - 1);
+  socklen_t addrLen = static_cast<socklen_t>(
       offsetof(sockaddr_un, sun_path) + std::strlen(addr.sun_path));
-  ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&addr), addr_len), 0);
+  ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&addr), addrLen), 0);
 
-  // Send frame with unregistered type 999
-  uint32_t frame_len = htonl(sizeof(uint16_t));
-  uint16_t msg_type = htons(999);
-  ::write(fd, &frame_len, sizeof(frame_len));
-  ::write(fd, &msg_type, sizeof(msg_type));
+  uint32_t frameLen = htonl(sizeof(uint16_t));
+  uint16_t msgType = htons(999);
+  ::write(fd, &frameLen, sizeof(frameLen));
+  ::write(fd, &msgType, sizeof(msgType));
 
-  // Server should close the connection (no response for unregistered type).
-  // Try to read — should get EOF.
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   char buf[64];
   ssize_t n = ::read(fd, buf, sizeof(buf));
-  EXPECT_LE(n, 0);  // EOF or error
+  EXPECT_LE(n, 0);
 
   ::close(fd);
 }
 
 TEST_F(AdminServerTest, InvalidFrameTooShort) {
-  CreateServer("test_bad_frame");
+  createServer("/run/simm/simm_bad_frame");
 
   int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
   ASSERT_GE(fd, 0);
@@ -465,18 +453,16 @@ TEST_F(AdminServerTest, InvalidFrameTooShort) {
   sockaddr_un addr;
   std::memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  std::strncpy(addr.sun_path, server_->SocketPath().c_str(), sizeof(addr.sun_path) - 1);
-  socklen_t addr_len = static_cast<socklen_t>(
+  std::strncpy(addr.sun_path, server_->socketPath().c_str(), sizeof(addr.sun_path) - 1);
+  socklen_t addrLen = static_cast<socklen_t>(
       offsetof(sockaddr_un, sun_path) + std::strlen(addr.sun_path));
-  ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&addr), addr_len), 0);
+  ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&addr), addrLen), 0);
 
-  // Send frame_len = 1 (< sizeof(uint16_t)), which is invalid
-  uint32_t frame_len = htonl(1);
-  ::write(fd, &frame_len, sizeof(frame_len));
+  uint32_t frameLen = htonl(1);
+  ::write(fd, &frameLen, sizeof(frameLen));
   uint8_t garbage = 0xFF;
   ::write(fd, &garbage, 1);
 
-  // Server should reject and close connection
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   char buf[64];
   ssize_t n = ::read(fd, buf, sizeof(buf));
@@ -486,32 +472,30 @@ TEST_F(AdminServerTest, InvalidFrameTooShort) {
 }
 
 TEST_F(AdminServerTest, EmptyPayload) {
-  CreateServer("test_empty_payload");
+  createServer("/run/simm/simm_empty_payload");
 
-  // GFLAG_LIST expects no payload — should work fine with empty payload
-  auto client = ConnectClient();
-  uint16_t resp_type = 0;
-  std::string resp_payload;
-  ASSERT_TRUE(client.SendRequest(AdminMsgType::GFLAG_LIST, "", resp_type, resp_payload));
+  auto client = connectClient();
+  uint16_t respType = 0;
+  std::string respPayload;
+  ASSERT_TRUE(client.sendRequest(AdminMsgType::GFLAG_LIST, "", respType, respPayload));
 
   proto::common::ListAllGFlagsResponsePB resp;
-  ASSERT_TRUE(resp.ParseFromString(resp_payload));
+  ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::OK);
 }
 
 TEST_F(AdminServerTest, MalformedProtobufPayload) {
-  CreateServer("test_bad_proto");
+  createServer("/run/simm/simm_bad_proto");
 
-  // Send garbage bytes as payload for GFLAG_GET (expects a valid protobuf)
   std::string garbage = "\x00\xFF\xFE\xAB\xCD";
 
-  auto client = ConnectClient();
-  uint16_t resp_type = 0;
-  std::string resp_payload;
-  ASSERT_TRUE(client.SendRequest(AdminMsgType::GFLAG_GET, garbage, resp_type, resp_payload));
+  auto client = connectClient();
+  uint16_t respType = 0;
+  std::string respPayload;
+  ASSERT_TRUE(client.sendRequest(AdminMsgType::GFLAG_GET, garbage, respType, respPayload));
 
   proto::common::GetGFlagValueResponsePB resp;
-  ASSERT_TRUE(resp.ParseFromString(resp_payload));
+  ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::InvalidArgument);
 }
 
@@ -520,51 +504,48 @@ TEST_F(AdminServerTest, MalformedProtobufPayload) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, MultipleSequentialClients) {
-  CreateServer("test_multi_client");
+  createServer("/run/simm/simm_multi_client");
 
   for (int i = 0; i < 5; ++i) {
-    auto client = ConnectClient();
-    uint16_t resp_type = 0;
-    std::string resp_payload;
-    ASSERT_TRUE(client.SendRequest(AdminMsgType::GFLAG_LIST, "", resp_type, resp_payload));
+    auto client = connectClient();
+    uint16_t respType = 0;
+    std::string respPayload;
+    ASSERT_TRUE(client.sendRequest(AdminMsgType::GFLAG_LIST, "", respType, respPayload));
 
     proto::common::ListAllGFlagsResponsePB resp;
-    ASSERT_TRUE(resp.ParseFromString(resp_payload));
+    ASSERT_TRUE(resp.ParseFromString(respPayload));
     EXPECT_EQ(resp.ret_code(), CommonErr::OK);
   }
 }
 
 TEST_F(AdminServerTest, ConcurrentClients) {
-  CreateServer("test_concurrent");
+  createServer("/run/simm/simm_concurrent");
 
   constexpr int kNumClients = 10;
-  std::atomic<int> success_count{0};
+  std::atomic<int> successCount{0};
   std::vector<std::thread> threads;
 
   for (int i = 0; i < kNumClients; ++i) {
     threads.emplace_back([&, i]() {
-      // Stagger connections slightly
       std::this_thread::sleep_for(std::chrono::milliseconds(i * 10));
 
       UdsClient client;
-      if (!client.Connect(server_->SocketPath())) return;
+      if (!client.connect(server_->socketPath())) return;
 
-      uint16_t resp_type = 0;
-      std::string resp_payload;
-      if (!client.SendRequest(AdminMsgType::GFLAG_LIST, "", resp_type, resp_payload)) return;
+      uint16_t respType = 0;
+      std::string respPayload;
+      if (!client.sendRequest(AdminMsgType::GFLAG_LIST, "", respType, respPayload)) return;
 
       proto::common::ListAllGFlagsResponsePB resp;
-      if (resp.ParseFromString(resp_payload) && resp.ret_code() == CommonErr::OK) {
-        success_count.fetch_add(1);
+      if (resp.ParseFromString(respPayload) && resp.ret_code() == CommonErr::OK) {
+        successCount.fetch_add(1);
       }
     });
   }
 
   for (auto& t : threads) t.join();
 
-  // AdminServer handles clients sequentially (single-threaded accept loop),
-  // so all clients should eventually be served.
-  EXPECT_EQ(success_count.load(), kNumClients);
+  EXPECT_EQ(successCount.load(), kNumClients);
 }
 
 // ---------------------------------------------------------------------------
@@ -572,47 +553,40 @@ TEST_F(AdminServerTest, ConcurrentClients) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, ShutdownWhileClientConnected) {
-  CreateServer("test_shutdown_client");
-  std::string path = server_->SocketPath();
+  createServer("/run/simm/simm_shutdown_client");
+  std::string path = server_->socketPath();
 
-  // Connect but don't send anything yet
   UdsClient client;
-  ASSERT_TRUE(client.Connect(path));
+  ASSERT_TRUE(client.connect(path));
 
-  // Destroy server — should not hang or crash
   server_.reset();
 
-  // Socket file should be cleaned up
   struct stat st;
   EXPECT_NE(::stat(path.c_str(), &st), 0);
 }
 
 TEST_F(AdminServerTest, DoubleDestructionSafe) {
-  CreateServer("test_double_destroy");
-  // Just destroy — no crash or hang
+  createServer("/run/simm/simm_double_destroy");
   server_.reset();
-  // Calling reset again is a no-op (unique_ptr)
   server_.reset();
 }
 
 TEST_F(AdminServerTest, StaleSocketFileOverwritten) {
-  // Create a stale socket file manually
-  std::string stale_path = std::string("/run/simm/simm_stale.") +
-                           std::to_string(::getpid()) + ".sock";
+  std::string stalePath = std::string("/run/simm/simm_stale.") +
+                          std::to_string(::getpid()) + ".sock";
   {
-    int fd = ::creat(stale_path.c_str(), 0666);
+    int fd = ::creat(stalePath.c_str(), 0666);
     if (fd >= 0) ::close(fd);
   }
 
-  // AdminServer should unlink the stale file and bind successfully
-  auto server = std::make_unique<AdminServer>("stale");
+  auto server = std::make_unique<AdminServer>("/run/simm/simm_stale");
+  EXPECT_TRUE(server->isRunning());
   struct stat st;
-  EXPECT_EQ(::stat(server->SocketPath().c_str(), &st), 0);
+  EXPECT_EQ(::stat(server->socketPath().c_str(), &st), 0);
   EXPECT_TRUE(S_ISSOCK(st.st_mode));
 
   server.reset();
-  // Clean up
-  ::unlink(stale_path.c_str());
+  ::unlink(stalePath.c_str());
 }
 
 }  // namespace

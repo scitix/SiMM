@@ -33,33 +33,41 @@ namespace common {
 // Construction: create socket, bind, listen, spawn serve thread
 // ---------------------------------------------------------------------------
 
-AdminServer::AdminServer(const std::string& role) : role_(role) {
-  // Ensure /run/simm/ exists
-  const char* base_dir = "/run/simm";
+AdminServer::AdminServer(std::string basePath)
+    : basePath_(std::move(basePath)), listenFd_(-1), running_(false) {
+  // Derive directory from basePath and ensure it exists
+  std::string dirStr;
+  auto pos = basePath_.find_last_of('/');
+  if (pos == std::string::npos) {
+    dirStr = ".";
+  } else if (pos == 0) {
+    dirStr = "/";
+  } else {
+    dirStr = basePath_.substr(0, pos);
+  }
   struct stat st;
-  if (::stat(base_dir, &st) != 0) {
-    if (::mkdir(base_dir, 0777) != 0 && errno != EEXIST) {
-      MLOG_ERROR("mkdir({}) failed, errno={}", base_dir, errno);
+  if (::stat(dirStr.c_str(), &st) != 0) {
+    if (::mkdir(dirStr.c_str(), 0777) != 0 && errno != EEXIST) {
+      MLOG_ERROR("mkdir({}) failed, errno={}", dirStr, errno);
       return;
     }
   }
 
-  // Socket path: /run/simm/simm_<role>.<pid>.sock
-  socket_path_ = std::string(base_dir) + "/simm_" + role_ + "." +
-                  std::to_string(::getpid()) + ".sock";
-  ::unlink(socket_path_.c_str());
+  // Socket path: <basePath>.<pid>.sock
+  socketPath_ = basePath_ + "." + std::to_string(::getpid()) + ".sock";
+  ::unlink(socketPath_.c_str());
 
   // Create self-pipe for clean shutdown
-  if (::pipe(shutdown_pipe_) < 0) {
+  if (::pipe(shutdownPipe_) < 0) {
     MLOG_ERROR("pipe() failed for shutdown self-pipe, errno={}", errno);
     return;
   }
   // Make read end non-blocking
-  ::fcntl(shutdown_pipe_[0], F_SETFL, O_NONBLOCK);
+  ::fcntl(shutdownPipe_[0], F_SETFL, O_NONBLOCK);
 
   // Create listen socket
-  listen_fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (listen_fd_ < 0) {
+  listenFd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (listenFd_ < 0) {
     MLOG_ERROR("socket(AF_UNIX) failed, errno={}", errno);
     return;
   }
@@ -67,39 +75,39 @@ AdminServer::AdminServer(const std::string& role) : role_(role) {
   sockaddr_un addr;
   std::memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  std::strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
+  std::strncpy(addr.sun_path, socketPath_.c_str(), sizeof(addr.sun_path) - 1);
   addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
 
-  socklen_t addr_len = static_cast<socklen_t>(
+  socklen_t addrLen = static_cast<socklen_t>(
       offsetof(sockaddr_un, sun_path) + std::strlen(addr.sun_path));
 
-  if (::bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), addr_len) < 0) {
-    MLOG_ERROR("bind({}) failed, errno={}", socket_path_, errno);
-    Shutdown();
+  if (::bind(listenFd_, reinterpret_cast<sockaddr*>(&addr), addrLen) < 0) {
+    MLOG_ERROR("bind({}) failed, errno={}", socketPath_, errno);
+    shutdown();
     return;
   }
 
-  if (::listen(listen_fd_, 16) < 0) {
-    MLOG_ERROR("listen({}) failed, errno={}", socket_path_, errno);
-    Shutdown();
+  if (::listen(listenFd_, 16) < 0) {
+    MLOG_ERROR("listen({}) failed, errno={}", socketPath_, errno);
+    shutdown();
     return;
   }
 
   // Register built-in handlers (gflag + trace, available for all processes)
   handlers_[static_cast<uint16_t>(AdminMsgType::GFLAG_LIST)] =
-      [this](const std::string& p) { return HandleGFlagList(p); };
+      [this](const std::string& p) { return handleGFlagList(p); };
   handlers_[static_cast<uint16_t>(AdminMsgType::GFLAG_GET)] =
-      [this](const std::string& p) { return HandleGFlagGet(p); };
+      [this](const std::string& p) { return handleGFlagGet(p); };
   handlers_[static_cast<uint16_t>(AdminMsgType::GFLAG_SET)] =
-      [this](const std::string& p) { return HandleGFlagSet(p); };
+      [this](const std::string& p) { return handleGFlagSet(p); };
   handlers_[static_cast<uint16_t>(AdminMsgType::TRACE_TOGGLE)] =
-      [this](const std::string& p) { return HandleTraceToggle(p); };
+      [this](const std::string& p) { return handleTraceToggle(p); };
 
   // Spawn serve thread
   running_.store(true);
-  worker_ = std::thread(&AdminServer::ServeLoop, this);
+  worker_ = std::thread(&AdminServer::serveLoop, this);
 
-  MLOG_INFO("AdminServer({}) listening on {}", role_, socket_path_);
+  MLOG_INFO("AdminServer listening on {}", socketPath_);
 }
 
 // ---------------------------------------------------------------------------
@@ -107,23 +115,23 @@ AdminServer::AdminServer(const std::string& role) : role_(role) {
 // ---------------------------------------------------------------------------
 
 AdminServer::~AdminServer() {
-  Shutdown();
+  shutdown();
 }
 
-void AdminServer::Shutdown() {
+void AdminServer::shutdown() {
   if (!running_.exchange(false)) {
     // Already shut down or never started — just clean up fds
-    if (listen_fd_ >= 0) { ::close(listen_fd_); listen_fd_ = -1; }
-    if (shutdown_pipe_[0] >= 0) { ::close(shutdown_pipe_[0]); shutdown_pipe_[0] = -1; }
-    if (shutdown_pipe_[1] >= 0) { ::close(shutdown_pipe_[1]); shutdown_pipe_[1] = -1; }
-    if (!socket_path_.empty()) { ::unlink(socket_path_.c_str()); }
+    if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
+    if (shutdownPipe_[0] >= 0) { ::close(shutdownPipe_[0]); shutdownPipe_[0] = -1; }
+    if (shutdownPipe_[1] >= 0) { ::close(shutdownPipe_[1]); shutdownPipe_[1] = -1; }
+    if (!socketPath_.empty()) { ::unlink(socketPath_.c_str()); }
     return;
   }
 
   // Wake the serve loop via self-pipe
-  if (shutdown_pipe_[1] >= 0) {
+  if (shutdownPipe_[1] >= 0) {
     char c = 'x';
-    (void)::write(shutdown_pipe_[1], &c, 1);
+    (void)::write(shutdownPipe_[1], &c, 1);
   }
 
   // Join serve thread
@@ -132,14 +140,14 @@ void AdminServer::Shutdown() {
   }
 
   // Close all fds
-  if (listen_fd_ >= 0) { ::close(listen_fd_); listen_fd_ = -1; }
-  if (shutdown_pipe_[0] >= 0) { ::close(shutdown_pipe_[0]); shutdown_pipe_[0] = -1; }
-  if (shutdown_pipe_[1] >= 0) { ::close(shutdown_pipe_[1]); shutdown_pipe_[1] = -1; }
+  if (listenFd_ >= 0) { ::close(listenFd_); listenFd_ = -1; }
+  if (shutdownPipe_[0] >= 0) { ::close(shutdownPipe_[0]); shutdownPipe_[0] = -1; }
+  if (shutdownPipe_[1] >= 0) { ::close(shutdownPipe_[1]); shutdownPipe_[1] = -1; }
 
   // Remove socket file
-  if (!socket_path_.empty()) {
-    ::unlink(socket_path_.c_str());
-    MLOG_INFO("AdminServer({}) shut down, unlinked {}", role_, socket_path_);
+  if (!socketPath_.empty()) {
+    ::unlink(socketPath_.c_str());
+    MLOG_INFO("AdminServer shut down, unlinked {}", socketPath_);
   }
 
   handlers_.clear();
@@ -149,26 +157,26 @@ void AdminServer::Shutdown() {
 // Public API
 // ---------------------------------------------------------------------------
 
-void AdminServer::RegisterHandler(AdminMsgType msg_type, Handler handler) {
+void AdminServer::registerHandler(AdminMsgType msg_type, Handler handler) {
   handlers_[static_cast<uint16_t>(msg_type)] = std::move(handler);
 }
 
 // ---------------------------------------------------------------------------
-// Serve loop: poll on listen_fd + shutdown_pipe, accept clients
+// Serve loop: poll on listenFd + shutdownPipe, accept clients
 // ---------------------------------------------------------------------------
 
-void AdminServer::ServeLoop() {
+void AdminServer::serveLoop() {
   while (running_.load()) {
     struct pollfd fds[2];
-    fds[0].fd = listen_fd_;
+    fds[0].fd = listenFd_;
     fds[0].events = POLLIN;
-    fds[1].fd = shutdown_pipe_[0];
+    fds[1].fd = shutdownPipe_[0];
     fds[1].events = POLLIN;
 
     int ret = ::poll(fds, 2, -1);  // block until event
     if (ret < 0) {
       if (errno == EINTR) continue;
-      MLOG_ERROR("poll() failed on {}, errno={}", socket_path_, errno);
+      MLOG_ERROR("poll() failed on {}, errno={}", socketPath_, errno);
       break;
     }
 
@@ -179,15 +187,15 @@ void AdminServer::ServeLoop() {
 
     // Check new client connection
     if (fds[0].revents & POLLIN) {
-      int client_fd = ::accept(listen_fd_, nullptr, nullptr);
-      if (client_fd < 0) {
+      int clientFd = ::accept(listenFd_, nullptr, nullptr);
+      if (clientFd < 0) {
         if (errno == EINTR) continue;
         if (!running_.load()) break;
-        MLOG_ERROR("accept() failed on {}, errno={}", socket_path_, errno);
+        MLOG_ERROR("accept() failed on {}, errno={}", socketPath_, errno);
         continue;
       }
-      HandleClient(client_fd);
-      ::close(client_fd);
+      handleClient(clientFd);
+      ::close(clientFd);
     }
   }
 }
@@ -196,40 +204,40 @@ void AdminServer::ServeLoop() {
 // Client handling: read frame, dispatch to handler, send response
 // ---------------------------------------------------------------------------
 
-void AdminServer::HandleClient(int client_fd) {
+void AdminServer::handleClient(int clientFd) {
   // Read frame: [uint32_t len][uint16_t type][payload]
-  uint32_t len_net = 0;
-  if (!ReadExact(client_fd, &len_net, sizeof(len_net))) {
-    MLOG_WARN("Failed to read frame length on {}", socket_path_);
+  uint32_t lenNet = 0;
+  if (!readExact(clientFd, &lenNet, sizeof(lenNet))) {
+    MLOG_WARN("Failed to read frame length on {}", socketPath_);
     return;
   }
-  uint32_t len = ntohl(len_net);
+  uint32_t len = ntohl(lenNet);
   if (len < sizeof(uint16_t)) {
-    MLOG_WARN("Invalid frame length {} on {}", len, socket_path_);
+    MLOG_WARN("Invalid frame length {} on {}", len, socketPath_);
     return;
   }
 
-  uint16_t type_net = 0;
-  if (!ReadExact(client_fd, &type_net, sizeof(type_net))) {
-    MLOG_WARN("Failed to read msg type on {}", socket_path_);
+  uint16_t typeNet = 0;
+  if (!readExact(clientFd, &typeNet, sizeof(typeNet))) {
+    MLOG_WARN("Failed to read msg type on {}", socketPath_);
     return;
   }
-  uint16_t type_raw = ntohs(type_net);
+  uint16_t typeRaw = ntohs(typeNet);
 
-  uint32_t payload_len = len - static_cast<uint32_t>(sizeof(type_net));
-  std::string payload(payload_len, '\0');
-  if (payload_len > 0 && !ReadExact(client_fd, payload.data(), payload_len)) {
-    MLOG_WARN("Failed to read payload on {}", socket_path_);
+  uint32_t payloadLen = len - static_cast<uint32_t>(sizeof(typeNet));
+  std::string payload(payloadLen, '\0');
+  if (payloadLen > 0 && !readExact(clientFd, payload.data(), payloadLen)) {
+    MLOG_WARN("Failed to read payload on {}", socketPath_);
     return;
   }
 
   // Dispatch to registered handler
-  auto it = handlers_.find(type_raw);
+  auto it = handlers_.find(typeRaw);
   if (it != handlers_.end()) {
     std::string response = it->second(payload);
-    SendResponse(client_fd, static_cast<AdminMsgType>(type_raw), response);
+    sendResponse(clientFd, static_cast<AdminMsgType>(typeRaw), response);
   } else {
-    MLOG_WARN("No handler for AdminMsgType {} on {}", type_raw, socket_path_);
+    MLOG_WARN("No handler for AdminMsgType {} on {}", typeRaw, socketPath_);
   }
 }
 
@@ -237,11 +245,11 @@ void AdminServer::HandleClient(int client_fd) {
 // Built-in handlers
 // ---------------------------------------------------------------------------
 
-std::string AdminServer::HandleGFlagList(const std::string& /*payload*/) {
+std::string AdminServer::handleGFlagList(const std::string& /*payload*/) {
   proto::common::ListAllGFlagsResponsePB resp;
-  std::vector<gflags::CommandLineFlagInfo> all_flags;
-  gflags::GetAllFlags(&all_flags);
-  for (const auto& f : all_flags) {
+  std::vector<gflags::CommandLineFlagInfo> allFlags;
+  gflags::GetAllFlags(&allFlags);
+  for (const auto& f : allFlags) {
     auto* rf = resp.add_flags();
     rf->set_flag_name(f.name);
     rf->set_flag_value(f.current_value);
@@ -255,7 +263,7 @@ std::string AdminServer::HandleGFlagList(const std::string& /*payload*/) {
   return buf;
 }
 
-std::string AdminServer::HandleGFlagGet(const std::string& payload) {
+std::string AdminServer::handleGFlagGet(const std::string& payload) {
   proto::common::GetGFlagValueRequestPB req;
   proto::common::GetGFlagValueResponsePB resp;
   if (!req.ParseFromString(payload)) {
@@ -279,7 +287,7 @@ std::string AdminServer::HandleGFlagGet(const std::string& payload) {
   return buf;
 }
 
-std::string AdminServer::HandleGFlagSet(const std::string& payload) {
+std::string AdminServer::handleGFlagSet(const std::string& payload) {
   proto::common::SetGFlagValueRequestPB req;
   proto::common::SetGFlagValueResponsePB resp;
   if (!req.ParseFromString(payload)) {
@@ -299,7 +307,7 @@ std::string AdminServer::HandleGFlagSet(const std::string& payload) {
   return buf;
 }
 
-std::string AdminServer::HandleTraceToggle(const std::string& payload) {
+std::string AdminServer::handleTraceToggle(const std::string& payload) {
   proto::common::TraceToggleRequestPB req;
   proto::common::TraceToggleResponsePB resp;
   if (!req.ParseFromString(payload)) {
@@ -319,7 +327,7 @@ std::string AdminServer::HandleTraceToggle(const std::string& payload) {
 // UDS I/O helpers
 // ---------------------------------------------------------------------------
 
-bool AdminServer::ReadExact(int fd, void* buf, size_t len) {
+bool AdminServer::readExact(int fd, void* buf, size_t len) {
   char* p = static_cast<char*>(buf);
   size_t remaining = len;
   while (remaining > 0) {
@@ -337,23 +345,23 @@ bool AdminServer::ReadExact(int fd, void* buf, size_t len) {
   return true;
 }
 
-void AdminServer::SendResponse(int client_fd, AdminMsgType type,
-                                const std::string& serialized_resp) {
-  uint32_t resp_len = static_cast<uint32_t>(sizeof(uint16_t) + serialized_resp.size());
-  uint32_t resp_len_net = htonl(resp_len);
-  uint16_t resp_type_net = htons(static_cast<uint16_t>(type));
+void AdminServer::sendResponse(int clientFd, AdminMsgType type,
+                                const std::string& serializedResp) {
+  uint32_t respLen = static_cast<uint32_t>(sizeof(uint16_t) + serializedResp.size());
+  uint32_t respLenNet = htonl(respLen);
+  uint16_t respTypeNet = htons(static_cast<uint16_t>(type));
 
   struct iovec iov[3];
-  iov[0].iov_base = &resp_len_net;
-  iov[0].iov_len  = sizeof(resp_len_net);
-  iov[1].iov_base = &resp_type_net;
-  iov[1].iov_len  = sizeof(resp_type_net);
-  iov[2].iov_base = const_cast<char*>(serialized_resp.data());
-  iov[2].iov_len  = serialized_resp.size();
+  iov[0].iov_base = &respLenNet;
+  iov[0].iov_len  = sizeof(respLenNet);
+  iov[1].iov_base = &respTypeNet;
+  iov[1].iov_len  = sizeof(respTypeNet);
+  iov[2].iov_base = const_cast<char*>(serializedResp.data());
+  iov[2].iov_len  = serializedResp.size();
 
-  ssize_t n = ::writev(client_fd, iov, 3);
+  ssize_t n = ::writev(clientFd, iov, 3);
   if (n < 0) {
-    MLOG_WARN("Failed to send admin response on {}, errno={}", socket_path_, errno);
+    MLOG_WARN("Failed to send admin response on {}, errno={}", socketPath_, errno);
   }
 }
 

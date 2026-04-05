@@ -15,22 +15,22 @@ namespace common {
 //
 // The constructor creates the Unix domain socket, binds, listens, and spawns
 // the serve thread. The destructor shuts down the thread, closes the socket,
-// and unlinks the socket file. No explicit Start()/Stop() — lifecycle is
+// and unlinks the socket file. No explicit start()/stop() — lifecycle is
 // tied to object lifetime (RAII).
 //
-// Socket path: /run/simm/simm_<role>.<pid>.sock
+// Socket path: <basePath>.<pid>.sock
 //   e.g. /run/simm/simm_ds.12345.sock
 //
 // Built-in handlers for GFLAG_LIST/GET/SET and TRACE_TOGGLE are always
 // registered. Additional handlers (e.g. DS_STATUS) can be registered via
-// RegisterHandler() by the owning service after construction.
+// registerHandler() by the owning service after construction.
 //
 // Wire protocol: [uint32_t frame_len][uint16_t type][payload]
 class AdminServer {
  public:
-  // role: "cm" or "ds".
-  // Socket path = /run/simm/simm_<role>.<pid>.sock
-  explicit AdminServer(const std::string& role);
+  // basePath: e.g. "/run/simm/simm_cm" or "/run/simm/simm_ds".
+  // Socket path = <basePath>.<pid>.sock
+  explicit AdminServer(std::string basePath);
   ~AdminServer();
 
   AdminServer(const AdminServer&) = delete;
@@ -41,29 +41,31 @@ class AdminServer {
 
   // Register a custom handler for a given message type.
   // Safe to call after construction and before the first client connects.
-  void RegisterHandler(AdminMsgType msg_type, Handler handler);
+  void registerHandler(AdminMsgType msg_type, Handler handler);
 
-  const std::string& SocketPath() const { return socket_path_; }
+  const std::string& socketPath() const { return socketPath_; }
+
+  bool isRunning() const { return running_.load(); }
 
  private:
-  void ServeLoop();
-  void HandleClient(int client_fd);
-  void Shutdown();
+  void serveLoop();
+  void handleClient(int client_fd);
+  void shutdown();
 
   // Built-in handlers
-  std::string HandleGFlagList(const std::string& payload);
-  std::string HandleGFlagGet(const std::string& payload);
-  std::string HandleGFlagSet(const std::string& payload);
-  std::string HandleTraceToggle(const std::string& payload);
+  std::string handleGFlagList(const std::string& payload);
+  std::string handleGFlagGet(const std::string& payload);
+  std::string handleGFlagSet(const std::string& payload);
+  std::string handleTraceToggle(const std::string& payload);
 
   // UDS I/O helpers
-  static bool ReadExact(int fd, void* buf, size_t len);
-  void SendResponse(int client_fd, AdminMsgType type, const std::string& serialized_resp);
+  static bool readExact(int fd, void* buf, size_t len);
+  void sendResponse(int client_fd, AdminMsgType type, const std::string& serialized_resp);
 
-  std::string role_;
-  std::string socket_path_;
-  int listen_fd_{-1};
-  int shutdown_pipe_[2]{-1, -1};   // self-pipe for clean shutdown
+  std::string basePath_;
+  std::string socketPath_;
+  int listenFd_{-1};
+  int shutdownPipe_[2]{-1, -1};   // self-pipe for clean shutdown
   std::atomic<bool> running_{false};
   std::thread worker_;
   std::unordered_map<uint16_t, Handler> handlers_;

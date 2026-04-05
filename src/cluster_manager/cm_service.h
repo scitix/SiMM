@@ -50,7 +50,7 @@ class ClusterManagerService {
 
   // Register CM-specific admin handlers to the UDS AdminServer.
   // Called from cm_main after service is initialized.
-  void RegisterAdminHandlers(simm::common::AdminServer* admin_server);
+  error_code_t RegisterAdminHandlers(simm::common::AdminServer* admin_server);
 
   bool IsRunning() const { return is_running_.load(); }
   bool IsStopped() const { return !is_running_.load(); }

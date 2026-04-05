@@ -73,3 +73,17 @@ message DsStatusResponsePB {
   bool cm_ready = 3;
   uint32 heartbeat_failure_count = 4;
 }
+
+// CM internal status query (for testing/debugging)
+message CmStatusRequestPB {
+  // empty — query all status fields
+}
+
+message CmStatusResponsePB {
+  sint32 ret_code = 1;
+  bool is_running = 2;
+  bool service_ready = 3;
+  uint32 alive_node_count = 4;
+  uint32 dead_node_count = 5;
+  uint32 total_shard_count = 6;
+}

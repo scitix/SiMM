@@ -81,7 +81,7 @@ class KVRpcService {
 
   // Register DS-specific admin handlers to the UDS AdminServer.
   // Called from kv_server_main after service is initialized.
-  void RegisterAdminHandlers(simm::common::AdminServer* admin_server);
+  error_code_t RegisterAdminHandlers(simm::common::AdminServer* admin_server);
 
  private:
   error_code_t StartRPCServices();

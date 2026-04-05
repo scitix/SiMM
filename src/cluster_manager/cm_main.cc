@@ -81,10 +81,11 @@ int main(int argc, char *argv[]) {
 
   // TODO(ytji): load configuration from file, e.g. cm_conf.json
 
-  // Init AdminServer early — before signal handlers and cmService.
-  // Constructor creates UDS socket, binds, listens, and spawns serve thread.
-  // Destructor handles shutdown (join thread, close fd, unlink socket).
-  auto admin_server = std::make_unique<simm::common::AdminServer>("cm");
+  auto admin_server = std::make_unique<simm::common::AdminServer>("/run/simm/simm_cm");
+  if (!admin_server->isRunning()) {
+    MLOG_CRITICAL("Failed to init AdminServer");
+    return CmErr::InitFailed;
+  }
 
   // Register signal handlers
   MLOG_INFO("Register signal handers for SIGINT/SIGTERM/SIGSEGV");
@@ -115,8 +116,11 @@ int main(int argc, char *argv[]) {
     goto exit;
   }
 
-  // Register CM-specific admin handlers after service is ready
-  cm_service_ptr->RegisterAdminHandlers(admin_server.get());
+  rc = cm_service_ptr->RegisterAdminHandlers(admin_server.get());
+  if (rc != CommonErr::OK) {
+    MLOG_CRITICAL("Failed to register CM admin handlers, rc:{}", rc);
+    goto exit;
+  }
 
   MLOG_INFO("ClusterManager main process starts successfully!");
 

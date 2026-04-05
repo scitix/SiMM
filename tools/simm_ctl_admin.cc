@@ -79,6 +79,7 @@ enum class AdminMsgType : uint16_t {
   GFLAG_GET    = 3,
   GFLAG_SET    = 4,
   DS_STATUS    = 5,
+  CM_STATUS    = 6,
 };
 
 // Unix domain socket implementation
@@ -539,6 +540,50 @@ static void CallbackDsStatus(AdminChannel &channel) {
   done_latch.wait();
 }
 
+static void CallbackCmStatus(AdminChannel &channel) {
+  proto::common::CmStatusRequestPB req;
+  auto *resp = new proto::common::CmStatusResponsePB();
+  std::latch done_latch(1);
+
+  if (!channel.Call(
+          req,
+          resp,
+          [&](const google::protobuf::Message *rsp,
+              const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+            const auto *response = dynamic_cast<const proto::common::CmStatusResponsePB *>(rsp);
+            if (ctx && ctx->Failed()) {
+              std::cerr << "Error: UDS call failed, err: " << ctx->ErrorText() << "\n";
+            } else if (response && response->ret_code() == CommonErr::OK) {
+              tabulate::Table tbl;
+              tbl.format().locale("C");
+              tbl.add_row({"Field", "Value"});
+              tbl.add_row({"is_running", response->is_running() ? "true" : "false"});
+              tbl.add_row({"service_ready", response->service_ready() ? "true" : "false"});
+              tbl.add_row({"alive_node_count",
+                           std::to_string(response->alive_node_count())});
+              tbl.add_row({"dead_node_count",
+                           std::to_string(response->dead_node_count())});
+              tbl.add_row({"total_shard_count",
+                           std::to_string(response->total_shard_count())});
+              tbl.column(0).format().width(28).font_style({tabulate::FontStyle::bold});
+              tbl.column(1).format().width(20);
+              tbl.row(0).format().font_style({tabulate::FontStyle::bold});
+              std::cout << tbl << std::endl;
+            } else {
+              std::cerr << "Error: CmStatus failed with ret_code: "
+                        << (response ? response->ret_code() : -1) << "\n";
+            }
+            done_latch.count_down();
+            delete resp;
+          })) {
+    std::cerr << "cm status: channel.Call() failed\n";
+    delete resp;
+    return;
+  }
+
+  done_latch.wait();
+}
+
 static void CallbackShard(const std::string &operation,
                           [[maybe_unused]] const std::string &name,
                           [[maybe_unused]] const std::string &value,
@@ -834,6 +879,7 @@ int main(int argc, char *argv[]) {
       std::cout << "SUBCOMMANDS:\n"
                 << "  node list [OPTIONS]           List all nodes\n"
                 << "  node set <IP:PORT> <STATUS>   Set node status (0=DEAD, 1=RUNNING)\n"
+                << "  cm status --pid <PID>          Query CM internal status via UDS\n"
                 << "  ds status --pid <PID>          Query DS internal status via UDS\n"
                 << "  shard list [OPTIONS]          List all shards\n"
                 << "  gflag list [OPTIONS]          List all gflags\n"
@@ -870,6 +916,28 @@ int main(int argc, char *argv[]) {
         CallbackNode("set", node_addr, node_status, ip, port, verbose);
       } else {
         std::cerr << "Error: Unknown node operation: " << operation << "\n";
+        return 1;
+      }
+    } else if (subcommand == "cm") {
+      if (args.empty()) {
+        std::cerr << "Error: cm subcommand requires an operation (status)\n";
+        return 1;
+      }
+      operation = args[0];
+      if (operation == "status") {
+        if (pid == -1) {
+          std::cerr << "Error: cm status requires --pid <CM_PID>\n";
+          return 1;
+        }
+        std::string socket_path = "/run/simm/simm_cm." + std::to_string(pid) + ".sock";
+        auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::CM_STATUS);
+        if (!uds_channel->Init()) {
+          std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
+          return 1;
+        }
+        CallbackCmStatus(*uds_channel);
+      } else {
+        std::cerr << "Error: Unknown cm operation: " << operation << "\n";
         return 1;
       }
     } else if (subcommand == "ds") {

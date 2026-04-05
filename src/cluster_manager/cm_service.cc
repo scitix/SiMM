@@ -6,6 +6,7 @@
 
 #include "cm_rpc_handler.h"
 #include "cm_service.h"
+#include "common/base/common_types.h"
 #include "common/logging/logging.h"
 #include "common/rpc_handlers/common_rpc_handlers.h"
 #include "proto/cm_clnt_rpcs.pb.h"
@@ -209,12 +210,43 @@ error_code_t ClusterManagerService::StopRPCServices() {
   return CommonErr::OK;
 }
 
-void ClusterManagerService::RegisterAdminHandlers(
+error_code_t ClusterManagerService::RegisterAdminHandlers(
     simm::common::AdminServer* admin_server) {
-  if (!admin_server) return;
-  // CM-specific admin handlers can be registered here in the future.
-  // Built-in gflag/trace handlers are already available from AdminServer.
+  if (!admin_server || !admin_server->isRunning()) {
+    MLOG_ERROR("RegisterAdminHandlers: AdminServer is null or not running");
+    return CommonErr::InvalidState;
+  }
+
+  admin_server->registerHandler(
+      simm::common::AdminMsgType::CM_STATUS,
+      [this](const std::string& /* payload */) -> std::string {
+        proto::common::CmStatusResponsePB resp;
+        resp.set_ret_code(CommonErr::OK);
+        resp.set_is_running(is_running_.load());
+        resp.set_service_ready(
+            simm::common::ModuleServiceState::GetInstance().IsServiceReady());
+
+        auto allStatus = node_manager_->GetAllNodeStatus();
+        uint32_t aliveCount = 0;
+        uint32_t deadCount = 0;
+        for (const auto& [addr, status] : allStatus) {
+          if (status == simm::common::RUNNING) {
+            ++aliveCount;
+          } else if (status == simm::common::DEAD) {
+            ++deadCount;
+          }
+        }
+        resp.set_alive_node_count(aliveCount);
+        resp.set_dead_node_count(deadCount);
+        resp.set_total_shard_count(shard_manager_->GetTotalShardNum());
+
+        std::string buf;
+        resp.SerializeToString(&buf);
+        return buf;
+      });
+
   MLOG_INFO("CM admin handlers registered");
+  return CommonErr::OK;
 }
 
 }  // namespace cm

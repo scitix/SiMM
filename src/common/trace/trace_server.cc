@@ -35,6 +35,7 @@ enum class AdminMsgType : uint16_t {
   GFLAG_GET    = 3,
   GFLAG_SET    = 4,
   DS_STATUS    = 5,
+  CM_STATUS    = 6,
 };
 
 TraceServer::TraceServer(std::string basePath)

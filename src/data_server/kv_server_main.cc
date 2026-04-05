@@ -95,10 +95,11 @@ int main(int argc, char *argv[]) {
 
   // TODO: load configuration file
 
-  // Init AdminServer early — before signal handlers and KVRpcService.
-  // Constructor creates UDS socket, binds, listens, and spawns serve thread.
-  // Destructor handles shutdown (join thread, close fd, unlink socket).
-  auto admin_server = std::make_unique<simm::common::AdminServer>("ds");
+  auto admin_server = std::make_unique<simm::common::AdminServer>("/run/simm/simm_ds");
+  if (!admin_server->isRunning()) {
+    MLOG_ERROR("Failed to init AdminServer");
+    return -1;
+  }
 
   // Register signal handlers and save previous ones
   MLOG_INFO("Register signal handers...");
@@ -120,8 +121,11 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  // Register DS-specific admin handlers after service is ready
-  server->RegisterAdminHandlers(admin_server.get());
+  rc = server->RegisterAdminHandlers(admin_server.get());
+  if (rc != CommonErr::OK) {
+    MLOG_ERROR("Failed to register DS admin handlers, rc:{}", rc);
+    return -1;
+  }
 
   MLOG_INFO("DataServer starts normally ...");
 
