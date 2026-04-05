@@ -220,7 +220,7 @@ error_code_t ClusterManagerService::RegisterAdminHandlers(
   admin_server->registerHandler(
       simm::common::AdminMsgType::CM_STATUS,
       [this](const std::string& /* payload */) -> std::string {
-        proto::common::CmStatusResponsePB resp;
+        proto::common::AdmCmStatusResponsePB resp;
         resp.set_ret_code(CommonErr::OK);
         resp.set_is_running(is_running_.load());
         resp.set_service_ready(

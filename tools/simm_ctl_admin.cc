@@ -501,8 +501,8 @@ static void CallbackNode(const std::string &operation,
 
 static void CallbackDsStatus(AdminChannel &channel) {
   // Query DS internal status via UDS (is_registered, cm_ready, heartbeat_failure_count)
-  proto::common::DsStatusRequestPB req;
-  auto *resp = new proto::common::DsStatusResponsePB();
+  proto::common::AdmDsStatusRequestPB req;
+  auto *resp = new proto::common::AdmDsStatusResponsePB();
   std::latch done_latch(1);
 
   if (!channel.Call(
@@ -510,7 +510,7 @@ static void CallbackDsStatus(AdminChannel &channel) {
           resp,
           [&](const google::protobuf::Message *rsp,
               const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
-            const auto *response = dynamic_cast<const proto::common::DsStatusResponsePB *>(rsp);
+            const auto *response = dynamic_cast<const proto::common::AdmDsStatusResponsePB *>(rsp);
             if (ctx && ctx->Failed()) {
               std::cerr << "Error: UDS call failed, err: " << ctx->ErrorText() << "\n";
             } else if (response && response->ret_code() == CommonErr::OK) {
@@ -541,8 +541,8 @@ static void CallbackDsStatus(AdminChannel &channel) {
 }
 
 static void CallbackCmStatus(AdminChannel &channel) {
-  proto::common::CmStatusRequestPB req;
-  auto *resp = new proto::common::CmStatusResponsePB();
+  proto::common::AdmCmStatusRequestPB req;
+  auto *resp = new proto::common::AdmCmStatusResponsePB();
   std::latch done_latch(1);
 
   if (!channel.Call(
@@ -550,7 +550,7 @@ static void CallbackCmStatus(AdminChannel &channel) {
           resp,
           [&](const google::protobuf::Message *rsp,
               const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
-            const auto *response = dynamic_cast<const proto::common::CmStatusResponsePB *>(rsp);
+            const auto *response = dynamic_cast<const proto::common::AdmCmStatusResponsePB *>(rsp);
             if (ctx && ctx->Failed()) {
               std::cerr << "Error: UDS call failed, err: " << ctx->ErrorText() << "\n";
             } else if (response && response->ret_code() == CommonErr::OK) {

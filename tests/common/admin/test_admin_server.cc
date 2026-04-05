@@ -338,7 +338,7 @@ TEST_F(AdminServerTest, RegisterCustomHandler) {
 
   server_->registerHandler(AdminMsgType::DS_STATUS,
       [](const std::string& payload) -> std::string {
-        proto::common::DsStatusResponsePB resp;
+        proto::common::AdmDsStatusResponsePB resp;
         resp.set_ret_code(CommonErr::OK);
         resp.set_is_registered(true);
         resp.set_cm_ready(true);
@@ -354,7 +354,7 @@ TEST_F(AdminServerTest, RegisterCustomHandler) {
   ASSERT_TRUE(client.sendRequest(AdminMsgType::DS_STATUS, "", respType, respPayload));
   EXPECT_EQ(respType, static_cast<uint16_t>(AdminMsgType::DS_STATUS));
 
-  proto::common::DsStatusResponsePB resp;
+  proto::common::AdmDsStatusResponsePB resp;
   ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::OK);
   EXPECT_TRUE(resp.is_registered());
@@ -367,7 +367,7 @@ TEST_F(AdminServerTest, CustomHandlerReceivesPayload) {
 
   server_->registerHandler(AdminMsgType::DS_STATUS,
       [](const std::string& payload) -> std::string {
-        proto::common::DsStatusResponsePB resp;
+        proto::common::AdmDsStatusResponsePB resp;
         resp.set_ret_code(CommonErr::OK);
         resp.set_heartbeat_failure_count(static_cast<uint32_t>(payload.size()));
         std::string buf;
@@ -375,7 +375,7 @@ TEST_F(AdminServerTest, CustomHandlerReceivesPayload) {
         return buf;
       });
 
-  proto::common::DsStatusRequestPB req;
+  proto::common::AdmDsStatusRequestPB req;
   std::string reqBuf;
   req.SerializeToString(&reqBuf);
 
@@ -384,7 +384,7 @@ TEST_F(AdminServerTest, CustomHandlerReceivesPayload) {
   std::string respPayload;
   ASSERT_TRUE(client.sendRequest(AdminMsgType::DS_STATUS, reqBuf, respType, respPayload));
 
-  proto::common::DsStatusResponsePB resp;
+  proto::common::AdmDsStatusResponsePB resp;
   ASSERT_TRUE(resp.ParseFromString(respPayload));
   EXPECT_EQ(resp.ret_code(), CommonErr::OK);
   EXPECT_EQ(resp.heartbeat_failure_count(), 0u);

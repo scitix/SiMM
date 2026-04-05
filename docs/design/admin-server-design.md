@@ -161,7 +161,7 @@ Services register their handlers after construction via `RegisterHandler()`:
 admin_server->RegisterHandler(
     AdminMsgType::DS_STATUS,
     [this](const std::string& payload) -> std::string {
-      DsStatusResponsePB resp;
+      AdmDsStatusResponsePB resp;
       resp.set_ret_code(CommonErr::OK);
       resp.set_is_registered(is_registered_.load());
       resp.set_cm_ready(cm_ready_.load());
@@ -217,11 +217,11 @@ Expose DS-internal heartbeat protocol state for observability and testing.
 ### Proto Definition (`common.proto`)
 
 ```protobuf
-message DsStatusRequestPB {
+message AdmDsStatusRequestPB {
   // empty
 }
 
-message DsStatusResponsePB {
+message AdmDsStatusResponsePB {
   sint32 ret_code = 1;
   bool is_registered = 2;            // DS registered with CM
   bool cm_ready = 3;                 // DS considers CM reachable
@@ -279,7 +279,7 @@ The SiCL-based admin RPC service (`ds_rpc_admin_port` / `cm_rpc_admin_port`) rem
 | `src/common/admin/admin_msg_types.h` | New | `AdminMsgType` enum |
 | `src/common/admin/admin_server.h` | New | `AdminServer` class declaration |
 | `src/common/admin/admin_server.cc` | New | Implementation: RAII lifecycle, serve loop, built-in handlers |
-| `src/proto/common.proto` | Modified | `DsStatusRequestPB`, `DsStatusResponsePB` |
+| `src/proto/common.proto` | Modified | `AdmDsStatusRequestPB`, `AdmDsStatusResponsePB` |
 | `src/cluster_manager/cm_main.cc` | Modified | Create AdminServer early, call `RegisterAdminHandlers` |
 | `src/cluster_manager/cm_service.h/.cc` | Modified | Add `RegisterAdminHandlers()` |
 | `src/data_server/kv_server_main.cc` | Modified | Create AdminServer early, call `RegisterAdminHandlers` |

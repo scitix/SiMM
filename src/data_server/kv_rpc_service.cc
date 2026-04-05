@@ -810,7 +810,7 @@ error_code_t KVRpcService::RegisterAdminHandlers(simm::common::AdminServer* admi
   admin_server->registerHandler(
       simm::common::AdminMsgType::DS_STATUS,
       [this](const std::string& /* payload */) -> std::string {
-        proto::common::DsStatusResponsePB resp;
+        proto::common::AdmDsStatusResponsePB resp;
         resp.set_ret_code(CommonErr::OK);
         resp.set_is_registered(is_registered_.load());
         resp.set_cm_ready(cm_ready_.load());
