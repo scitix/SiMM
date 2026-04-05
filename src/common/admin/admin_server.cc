@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <gflags/gflags.h>
+#include <folly/ScopeGuard.h>
 
 #include "common/errcode/errcode_def.h"
 #include "common/logging/logging.h"
@@ -23,6 +24,9 @@
 #ifdef SIMM_ENABLE_TRACE
 #include "common/trace/trace.h"
 #endif
+
+DEFINE_uint32(admin_max_payload_bytes, 1 << 20,
+              "Max payload size in bytes for admin UDS requests (default 1MB)");
 
 DECLARE_LOG_MODULE("admin_server");
 
@@ -202,8 +206,8 @@ void AdminServer::serveLoop() {
         MLOG_ERROR("accept() failed on {}, errno={}", socketPath_, errno);
         continue;
       }
+      SCOPE_EXIT { ::close(clientFd); };
       handleClient(clientFd);
-      ::close(clientFd);
     }
   }
 }
@@ -233,6 +237,18 @@ void AdminServer::handleClient(int clientFd) {
   uint16_t typeRaw = ntohs(typeNet);
 
   uint32_t payloadLen = len - static_cast<uint32_t>(sizeof(typeNet));
+  if (payloadLen > FLAGS_admin_max_payload_bytes) {
+    MLOG_WARN("Payload too large: {} bytes (max {}) on {}",
+              payloadLen, FLAGS_admin_max_payload_bytes, socketPath_);
+    // Send error response with ret_code = PayloadTooLarge.
+    // All admin response protos share sint32 ret_code as field 1.
+    proto::common::SetGFlagValueResponsePB errResp;
+    errResp.set_ret_code(CommonErr::PayloadTooLarge);
+    std::string errBuf;
+    errResp.SerializeToString(&errBuf);
+    sendResponse(clientFd, static_cast<AdminMsgType>(typeRaw), errBuf);
+    return;
+  }
   std::string payload(payloadLen, '\0');
   if (payloadLen > 0 && !readExact(clientFd, payload.data(), payloadLen)) {
     MLOG_WARN("Failed to read payload on {}", socketPath_);
