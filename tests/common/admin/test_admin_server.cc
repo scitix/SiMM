@@ -122,14 +122,13 @@ class AdminServerTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ::mkdir("/run/simm", 0777);
-    ::mkdir("/run/simm/admin", 0777);
   }
 
   void TearDown() override {
     server_.reset();
   }
 
-  void createServer(const std::string& basePath = "/run/simm/admin/simm_test") {
+  void createServer(const std::string& basePath = "/run/simm/admin_test") {
     server_ = std::make_unique<AdminServer>(basePath);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
@@ -148,7 +147,7 @@ class AdminServerTest : public ::testing::Test {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, ConstructionCreatesSocketFile) {
-  createServer("/run/simm/admin/simm_lifecycle");
+  createServer("/run/simm/admin_lifecycle");
   EXPECT_TRUE(server_->isRunning());
   struct stat st;
   EXPECT_EQ(::stat(server_->socketPath().c_str(), &st), 0);
@@ -156,14 +155,14 @@ TEST_F(AdminServerTest, ConstructionCreatesSocketFile) {
 }
 
 TEST_F(AdminServerTest, SocketPathFormat) {
-  createServer("/run/simm/admin/simm_ds");
-  std::string expected = std::string("/run/simm/admin/simm_ds.") +
+  createServer("/run/simm/admin_ds");
+  std::string expected = std::string("/run/simm/admin_ds.") +
                          std::to_string(::getpid()) + ".sock";
   EXPECT_EQ(server_->socketPath(), expected);
 }
 
 TEST_F(AdminServerTest, DestructorRemovesSocketFile) {
-  createServer("/run/simm/admin/simm_cleanup");
+  createServer("/run/simm/admin_cleanup");
   std::string path = server_->socketPath();
   server_.reset();
   struct stat st;
@@ -171,8 +170,8 @@ TEST_F(AdminServerTest, DestructorRemovesSocketFile) {
 }
 
 TEST_F(AdminServerTest, MultipleServersWithDifferentBasePaths) {
-  auto serverA = std::make_unique<AdminServer>("/run/simm/admin/simm_testa");
-  auto serverB = std::make_unique<AdminServer>("/run/simm/admin/simm_testb");
+  auto serverA = std::make_unique<AdminServer>("/run/simm/admin_testa");
+  auto serverB = std::make_unique<AdminServer>("/run/simm/admin_testb");
   EXPECT_NE(serverA->socketPath(), serverB->socketPath());
 
   struct stat st;
@@ -188,7 +187,7 @@ TEST_F(AdminServerTest, MultipleServersWithDifferentBasePaths) {
 }
 
 TEST_F(AdminServerTest, IsRunningReflectsState) {
-  createServer("/run/simm/admin/simm_running");
+  createServer("/run/simm/admin_running");
   EXPECT_TRUE(server_->isRunning());
   server_.reset();
   // After destruction, no server to check — just verify no crash
@@ -199,7 +198,7 @@ TEST_F(AdminServerTest, IsRunningReflectsState) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, GFlagListReturnsFlags) {
-  createServer("/run/simm/admin/simm_gflag_list");
+  createServer("/run/simm/admin_gflag_list");
   auto client = connectClient();
 
   uint16_t respType = 0;
@@ -214,7 +213,7 @@ TEST_F(AdminServerTest, GFlagListReturnsFlags) {
 }
 
 TEST_F(AdminServerTest, GFlagGetKnownFlag) {
-  createServer("/run/simm/admin/simm_gflag_get");
+  createServer("/run/simm/admin_gflag_get");
 
   proto::common::GetGFlagValueRequestPB req;
   req.set_flag_name("gtest_color");
@@ -233,7 +232,7 @@ TEST_F(AdminServerTest, GFlagGetKnownFlag) {
 }
 
 TEST_F(AdminServerTest, GFlagGetUnknownFlag) {
-  createServer("/run/simm/admin/simm_gflag_get_unk");
+  createServer("/run/simm/admin_gflag_get_unk");
 
   proto::common::GetGFlagValueRequestPB req;
   req.set_flag_name("nonexistent_flag_12345");
@@ -251,7 +250,7 @@ TEST_F(AdminServerTest, GFlagGetUnknownFlag) {
 }
 
 TEST_F(AdminServerTest, GFlagSetAndVerify) {
-  createServer("/run/simm/admin/simm_gflag_set");
+  createServer("/run/simm/admin_gflag_set");
 
   proto::common::SetGFlagValueRequestPB setReq;
   setReq.set_flag_name("gtest_color");
@@ -289,7 +288,7 @@ TEST_F(AdminServerTest, GFlagSetAndVerify) {
 }
 
 TEST_F(AdminServerTest, GFlagSetNonexistentFlag) {
-  createServer("/run/simm/admin/simm_gflag_set_unk");
+  createServer("/run/simm/admin_gflag_set_unk");
 
   proto::common::SetGFlagValueRequestPB req;
   req.set_flag_name("nonexistent_flag_12345");
@@ -312,7 +311,7 @@ TEST_F(AdminServerTest, GFlagSetNonexistentFlag) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, TraceToggle) {
-  createServer("/run/simm/admin/simm_trace");
+  createServer("/run/simm/admin_trace");
 
   proto::common::TraceToggleRequestPB req;
   req.set_enable_trace(true);
@@ -335,7 +334,7 @@ TEST_F(AdminServerTest, TraceToggle) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, RegisterCustomHandler) {
-  createServer("/run/simm/admin/simm_custom");
+  createServer("/run/simm/admin_custom");
 
   server_->registerHandler(AdminMsgType::DS_STATUS,
       [](const std::string& payload) -> std::string {
@@ -364,7 +363,7 @@ TEST_F(AdminServerTest, RegisterCustomHandler) {
 }
 
 TEST_F(AdminServerTest, CustomHandlerReceivesPayload) {
-  createServer("/run/simm/admin/simm_payload");
+  createServer("/run/simm/admin_payload");
 
   server_->registerHandler(AdminMsgType::DS_STATUS,
       [](const std::string& payload) -> std::string {
@@ -392,7 +391,7 @@ TEST_F(AdminServerTest, CustomHandlerReceivesPayload) {
 }
 
 TEST_F(AdminServerTest, OverrideBuiltinHandler) {
-  createServer("/run/simm/admin/simm_override");
+  createServer("/run/simm/admin_override");
 
   server_->registerHandler(AdminMsgType::GFLAG_LIST,
       [](const std::string& /*payload*/) -> std::string {
@@ -419,7 +418,7 @@ TEST_F(AdminServerTest, OverrideBuiltinHandler) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, UnregisteredMsgTypeNoResponse) {
-  createServer("/run/simm/admin/simm_unknown_type");
+  createServer("/run/simm/admin_unknown_type");
 
   int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
   ASSERT_GE(fd, 0);
@@ -446,7 +445,7 @@ TEST_F(AdminServerTest, UnregisteredMsgTypeNoResponse) {
 }
 
 TEST_F(AdminServerTest, InvalidFrameTooShort) {
-  createServer("/run/simm/admin/simm_bad_frame");
+  createServer("/run/simm/admin_bad_frame");
 
   int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
   ASSERT_GE(fd, 0);
@@ -473,7 +472,7 @@ TEST_F(AdminServerTest, InvalidFrameTooShort) {
 }
 
 TEST_F(AdminServerTest, EmptyPayload) {
-  createServer("/run/simm/admin/simm_empty_payload");
+  createServer("/run/simm/admin_empty_payload");
 
   auto client = connectClient();
   uint16_t respType = 0;
@@ -486,7 +485,7 @@ TEST_F(AdminServerTest, EmptyPayload) {
 }
 
 TEST_F(AdminServerTest, MalformedProtobufPayload) {
-  createServer("/run/simm/admin/simm_bad_proto");
+  createServer("/run/simm/admin_bad_proto");
 
   std::string garbage = "\x00\xFF\xFE\xAB\xCD";
 
@@ -505,7 +504,7 @@ TEST_F(AdminServerTest, MalformedProtobufPayload) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, MultipleSequentialClients) {
-  createServer("/run/simm/admin/simm_multi_client");
+  createServer("/run/simm/admin_multi_client");
 
   for (int i = 0; i < 5; ++i) {
     auto client = connectClient();
@@ -520,7 +519,7 @@ TEST_F(AdminServerTest, MultipleSequentialClients) {
 }
 
 TEST_F(AdminServerTest, ConcurrentClients) {
-  createServer("/run/simm/admin/simm_concurrent");
+  createServer("/run/simm/admin_concurrent");
 
   constexpr int kNumClients = 10;
   std::atomic<int> successCount{0};
@@ -554,7 +553,7 @@ TEST_F(AdminServerTest, ConcurrentClients) {
 // ---------------------------------------------------------------------------
 
 TEST_F(AdminServerTest, ShutdownWhileClientConnected) {
-  createServer("/run/simm/admin/simm_shutdown_client");
+  createServer("/run/simm/admin_shutdown_client");
   std::string path = server_->socketPath();
 
   UdsClient client;
@@ -567,20 +566,20 @@ TEST_F(AdminServerTest, ShutdownWhileClientConnected) {
 }
 
 TEST_F(AdminServerTest, DoubleDestructionSafe) {
-  createServer("/run/simm/admin/simm_double_destroy");
+  createServer("/run/simm/admin_double_destroy");
   server_.reset();
   server_.reset();
 }
 
 TEST_F(AdminServerTest, StaleSocketFileOverwritten) {
-  std::string stalePath = std::string("/run/simm/admin/simm_stale.") +
+  std::string stalePath = std::string("/run/simm/admin_stale.") +
                           std::to_string(::getpid()) + ".sock";
   {
     int fd = ::creat(stalePath.c_str(), 0666);
     if (fd >= 0) ::close(fd);
   }
 
-  auto server = std::make_unique<AdminServer>("/run/simm/admin/simm_stale");
+  auto server = std::make_unique<AdminServer>("/run/simm/admin_stale");
   EXPECT_TRUE(server->isRunning());
   struct stat st;
   EXPECT_EQ(::stat(server->socketPath().c_str(), &st), 0);

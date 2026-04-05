@@ -186,7 +186,7 @@ class AdminClient:
     def get_ds_status(self, ds_pid: int) -> dict[str, str]:
         """
         Query DS internal status via simm_ctl_admin --pid <PID> ds status.
-        Uses Unix domain socket /run/simm/admin/simm_ds.<pid>.sock on the DS host.
+        Uses Unix domain socket /run/simm/admin_ds.<pid>.sock on the DS host.
         Returns {"is_registered": "true"/"false",
                  "cm_ready": "true"/"false",
                  "heartbeat_failure_count": "N"}.

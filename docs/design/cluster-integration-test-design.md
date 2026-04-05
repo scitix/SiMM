@@ -39,7 +39,7 @@ Key properties:
 │         └── config.py          ← YAML config + ClusterConfig    │
 │                                                                 │
 │  simm_ctl_admin ──(SiCL RPC)──► CM admin port                  │
-│  simm_ctl_admin ──(UDS)──────► DS /run/simm/admin/simm_ds.<pid>.sock │
+│  simm_ctl_admin ──(UDS)──────► DS /run/simm/admin_ds.<pid>.sock │
 │  simm_flags_admin ─(SiCL RPC)─► CM/DS admin port               │
 │  ssh ────────────────────────► Node B, C, D (CM/DS hosts)       │
 └─────────────────────────────────────────────────────────────────┘
