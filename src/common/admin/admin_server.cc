@@ -63,7 +63,7 @@ AdminServer::AdminServer(std::string basePath)
   // Create self-pipe for clean shutdown
   if (::pipe(shutdownPipe_) < 0) {
     MLOG_ERROR("pipe() failed for shutdown self-pipe, errno={}", errno);
-    return;
+    goto err_exit;
   }
   // Make read end non-blocking
   ::fcntl(shutdownPipe_[0], F_SETFL, O_NONBLOCK);
@@ -72,31 +72,31 @@ AdminServer::AdminServer(std::string basePath)
   listenFd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
   if (listenFd_ < 0) {
     MLOG_ERROR("socket(AF_UNIX) failed, errno={}", errno);
-    return;
+    goto err_exit;
   }
 
-  sockaddr_un addr;
-  std::memset(&addr, 0, sizeof(addr));
-  addr.sun_family = AF_UNIX;
-  std::strncpy(addr.sun_path, socketPath_.c_str(), sizeof(addr.sun_path) - 1);
-  addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
+  {
+    sockaddr_un addr;
+    std::memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    std::strncpy(addr.sun_path, socketPath_.c_str(), sizeof(addr.sun_path) - 1);
+    addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
 
-  socklen_t addrLen = static_cast<socklen_t>(
-      offsetof(sockaddr_un, sun_path) + std::strlen(addr.sun_path));
+    socklen_t addrLen = static_cast<socklen_t>(
+        offsetof(sockaddr_un, sun_path) + std::strlen(addr.sun_path));
 
-  if (::bind(listenFd_, reinterpret_cast<sockaddr*>(&addr), addrLen) < 0) {
-    MLOG_ERROR("bind({}) failed, errno={}", socketPath_, errno);
-    shutdown();
-    return;
+    if (::bind(listenFd_, reinterpret_cast<sockaddr*>(&addr), addrLen) < 0) {
+      MLOG_ERROR("bind({}) failed, errno={}", socketPath_, errno);
+      goto err_exit;
+    }
   }
 
   if (::listen(listenFd_, 16) < 0) {
     MLOG_ERROR("listen({}) failed, errno={}", socketPath_, errno);
-    shutdown();
-    return;
+    goto err_exit;
   }
 
-  // Register built-in handlers (gflag + trace, available for all processes)
+  // Register built-in handlers (gflag + trace, available for all SiMM components)
   handlers_[static_cast<uint16_t>(AdminMsgType::GFLAG_LIST)] =
       [this](const std::string& p) { return handleGFlagList(p); };
   handlers_[static_cast<uint16_t>(AdminMsgType::GFLAG_GET)] =
@@ -111,6 +111,10 @@ AdminServer::AdminServer(std::string basePath)
   worker_ = std::thread(&AdminServer::serveLoop, this);
 
   MLOG_INFO("AdminServer listening on {}", socketPath_);
+  return;
+
+err_exit:
+  shutdown();
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +165,7 @@ void AdminServer::shutdown() {
 // ---------------------------------------------------------------------------
 
 void AdminServer::registerHandler(AdminMsgType msg_type, Handler handler) {
+  std::unique_lock lock(handlersMutex_);
   handlers_[static_cast<uint16_t>(msg_type)] = std::move(handler);
 }
 
@@ -235,11 +240,14 @@ void AdminServer::handleClient(int clientFd) {
   }
 
   // Dispatch to registered handler
+  std::shared_lock lock(handlersMutex_);
   auto it = handlers_.find(typeRaw);
   if (it != handlers_.end()) {
     std::string response = it->second(payload);
+    lock.unlock();
     sendResponse(clientFd, static_cast<AdminMsgType>(typeRaw), response);
   } else {
+    lock.unlock();
     MLOG_WARN("No handler for AdminMsgType {} on {}", typeRaw, socketPath_);
   }
 }

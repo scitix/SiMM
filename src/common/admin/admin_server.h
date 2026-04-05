@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <functional>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -68,6 +69,7 @@ class AdminServer {
   int shutdownPipe_[2]{-1, -1};   // self-pipe for clean shutdown
   std::atomic<bool> running_{false};
   std::thread worker_;
+  mutable std::shared_mutex handlersMutex_;
   std::unordered_map<uint16_t, Handler> handlers_;
 };
 
