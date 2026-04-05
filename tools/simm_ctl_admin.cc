@@ -342,6 +342,8 @@ static void CallbackNode(const std::string &operation,
   InitRpcClientAndContext(rpc_client, ctx_shared);
 
   if (operation == "list") {
+    ListNodesRequestPB req;
+    auto resp = new ListNodesResponsePB();
     auto done_cb = [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
       if (ctx->Failed()) {
         std::cerr << "Error: RPC failed, err: " << ctx->ErrorText() << "\n";
@@ -405,11 +407,9 @@ static void CallbackNode(const std::string &operation,
           std::cerr << "Error: ListNodes RPC failed with ret_code: " << response->ret_code() << "\n";
         }
       }
+      delete resp;
       done_latch.count_down();
     };
-
-    ListNodesRequestPB req;
-    auto resp = new ListNodesResponsePB();
     rpc_client->SendRequest(ip,
                             port,
                             static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_NODE_REQ),
@@ -455,6 +455,13 @@ static void CallbackNode(const std::string &operation,
       }
     }
 
+    SetNodeStatusRequestPB req;
+    auto *node_addr = req.mutable_node();
+    node_addr->set_ip(node_ip);
+    node_addr->set_port(std::stoi(node_port_str));
+    req.set_node_status(status_value);
+
+    auto resp = new SetNodeStatusResponsePB();
     auto done_cb = [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
       if (ctx->Failed()) {
         LOG_ERROR("RPC failed, err:{}", ctx->ErrorText());
@@ -474,16 +481,9 @@ static void CallbackNode(const std::string &operation,
           std::cerr << "Error: SetNodeStatus RPC failed with ret_code: " << response->ret_code() << "\n";
         }
       }
+      delete resp;
       done_latch.count_down();
     };
-
-    SetNodeStatusRequestPB req;
-    auto *node_addr = req.mutable_node();
-    node_addr->set_ip(node_ip);
-    node_addr->set_port(std::stoi(node_port_str));
-    req.set_node_status(status_value);
-
-    auto resp = new SetNodeStatusResponsePB();
     rpc_client->SendRequest(ip,
                             port,
                             static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_SET_NODE_STATUS_REQ),
@@ -597,6 +597,8 @@ static void CallbackShard(const std::string &operation,
   InitRpcClientAndContext(rpc_client, ctx_shared);
 
   if (operation == "list") {
+    QueryShardRoutingTableAllRequestPB req;
+    auto resp = new QueryShardRoutingTableAllResponsePB();
     auto done_cb = [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
       if (ctx->Failed()) {
         LOG_ERROR("RPC failed, err:{}", ctx->ErrorText());
@@ -656,10 +658,9 @@ static void CallbackShard(const std::string &operation,
           std::cerr << "Error: ListShards RPC failed with ret_code: " << response->ret_code() << "\n";
         }
       }
+      delete resp;
       done_latch.count_down();
     };
-    QueryShardRoutingTableAllRequestPB req;
-    auto resp = new QueryShardRoutingTableAllResponsePB();
     rpc_client->SendRequest(ip,
                             port,
                             static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_SHARD_REQ),
@@ -837,6 +838,7 @@ static void CallbackTrace(AdminChannel &channel,
               delete resp;
             })) {
     std::cerr << "trace: channel.Call() failed" << std::endl;
+    delete resp;
     return;
   }
   done_latch.wait();
