@@ -164,6 +164,8 @@ class SimmCluster:
                 log_dir=self._default_log_dir,
                 heartbeat_cooldown_sec=self.config.heartbeat_cooldown_sec,
                 register_cooldown_sec=self.config.register_cooldown_sec,
+                cm_hb_tolerance_count=self.config.cm_hb_tolerance_count,
+                cm_connect_retry_interval_sec=self.config.cm_connect_retry_interval_sec,
                 memory_limit_bytes=self.config.memory_limit_bytes,
                 ds_logical_node_id=logical_id,
             )
@@ -207,6 +209,8 @@ class SimmCluster:
                 log_dir=host_cfg.log_dir,
                 heartbeat_cooldown_sec=self.config.heartbeat_cooldown_sec,
                 register_cooldown_sec=self.config.register_cooldown_sec,
+                cm_hb_tolerance_count=self.config.cm_hb_tolerance_count,
+                cm_connect_retry_interval_sec=self.config.cm_connect_retry_interval_sec,
                 memory_limit_bytes=self.config.memory_limit_bytes,
                 ds_logical_node_id=logical_id,
             )
@@ -322,6 +326,8 @@ class SimmCluster:
             log_dir=log_dir,
             heartbeat_cooldown_sec=self.config.heartbeat_cooldown_sec,
             register_cooldown_sec=self.config.register_cooldown_sec,
+            cm_hb_tolerance_count=self.config.cm_hb_tolerance_count,
+            cm_connect_retry_interval_sec=self.config.cm_connect_retry_interval_sec,
             memory_limit_bytes=self.config.memory_limit_bytes,
             ds_logical_node_id=ds_logical_node_id,
         )

@@ -1,4 +1,4 @@
-"""Root pytest conftest with shared fixtures for cluster integration tests.
+"""Root pytest conftest with shared fixtures for distributed protocol tests.
 
 Supports both single-machine and multi-machine modes:
 - Single-machine (default): all processes on localhost
@@ -115,7 +115,7 @@ def build_dir():
             return d
 
     # Default: look relative to this file
-    simm_root = Path(__file__).parents[2]  # tests/cluster_integration -> SiMM root
+    simm_root = Path(__file__).parents[2]  # tests/protocol_test -> SiMM root
     for mode in ["release", "relwithdeb", "debug"]:
         d = simm_root / "build" / mode / "bin"
         if (d / "cluster_manager").exists():
