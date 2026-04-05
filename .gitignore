@@ -28,3 +28,4 @@ compile_commands.json
 
 # clang cache
 .cache/
+docs/design/
