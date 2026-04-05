@@ -929,7 +929,7 @@ int main(int argc, char *argv[]) {
           std::cerr << "Error: cm status requires --pid <CM_PID>\n";
           return 1;
         }
-        std::string socket_path = "/run/simm/simm_cm." + std::to_string(pid) + ".sock";
+        std::string socket_path = "/run/simm/admin/simm_cm." + std::to_string(pid) + ".sock";
         auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::CM_STATUS);
         if (!uds_channel->Init()) {
           std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
@@ -951,7 +951,7 @@ int main(int argc, char *argv[]) {
           std::cerr << "Error: ds status requires --pid <DS_PID>\n";
           return 1;
         }
-        std::string socket_path = "/run/simm/simm_ds." + std::to_string(pid) + ".sock";
+        std::string socket_path = "/run/simm/admin/simm_ds." + std::to_string(pid) + ".sock";
         auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::DS_STATUS);
         if (!uds_channel->Init()) {
           std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";

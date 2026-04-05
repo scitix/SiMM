@@ -19,7 +19,7 @@ The design uses RAII lifecycle, self-pipe shutdown, and handler registration by 
 │  simm_ctl_admin (client)                     │
 │  --pid 12345 ds status     │
 └──────────────┬───────────────────────────────┘
-               │  UDS: /run/simm/simm_ds.12345.sock
+               │  UDS: /run/simm/admin/simm_ds.12345.sock
                ▼
 ┌──────────────────────────────────────────────┐
 │  AdminServer (inside DS process)             │
@@ -47,8 +47,8 @@ Constructor takes a `basePath` parameter (same pattern as TraceServer). The sock
 
 | Component | `basePath` | Example |
 |-----------|-----------|---------|
-| CM | `/run/simm/simm_cm` | `/run/simm/simm_cm.12345.sock` |
-| DS | `/run/simm/simm_ds` | `/run/simm/simm_ds.67890.sock` |
+| CM | `/run/simm/admin/simm_cm` | `/run/simm/admin/simm_cm.12345.sock` |
+| DS | `/run/simm/admin/simm_ds` | `/run/simm/admin/simm_ds.67890.sock` |
 
 
 ## 5. Wire Protocol
@@ -261,7 +261,7 @@ Output:
 | Aspect | TraceServer | AdminServer |
 |--------|-------------|-------------|
 | Location | `src/common/trace/` | `src/common/admin/` |
-| Socket path | `/run/simm/simm_trace.<pid>.sock` | `/run/simm/simm_<role>.<pid>.sock` |
+| Socket path | `/run/simm/simm_trace.<pid>.sock` | `/run/simm/admin/simm_<role>.<pid>.sock` |
 | Dispatch | `switch` hardcoded in `serveLoop` | `handlers_` map, external registration |
 | Used by | Client only | All SiMM components |
 | Shutdown | Manual `stop()` in destructor | Self-pipe + RAII destructor |

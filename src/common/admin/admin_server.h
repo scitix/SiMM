@@ -19,7 +19,7 @@ namespace common {
 // tied to object lifetime (RAII).
 //
 // Socket path: <basePath>.<pid>.sock
-//   e.g. /run/simm/simm_ds.12345.sock
+//   e.g. /run/simm/admin/simm_ds.12345.sock
 //
 // Built-in handlers for GFLAG_LIST/GET/SET and TRACE_TOGGLE are always
 // registered. Additional handlers (e.g. DS_STATUS) can be registered via
@@ -28,7 +28,7 @@ namespace common {
 // Wire protocol: [uint32_t frame_len][uint16_t type][payload]
 class AdminServer {
  public:
-  // basePath: e.g. "/run/simm/simm_cm" or "/run/simm/simm_ds".
+  // basePath: e.g. "/run/simm/admin/simm_cm" or "/run/simm/admin/simm_ds".
   // Socket path = <basePath>.<pid>.sock
   explicit AdminServer(std::string basePath);
   ~AdminServer();

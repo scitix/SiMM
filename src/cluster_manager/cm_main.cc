@@ -81,7 +81,7 @@ int main(int argc, char *argv[]) {
 
   // TODO(ytji): load configuration from file, e.g. cm_conf.json
 
-  auto admin_server = std::make_unique<simm::common::AdminServer>("/run/simm/simm_cm");
+  auto admin_server = std::make_unique<simm::common::AdminServer>("/run/simm/admin/simm_cm");
   if (admin_server == nullptr || !admin_server->isRunning()) {
     MLOG_CRITICAL("Failed to init AdminServer");
     return CmErr::InitFailed;
