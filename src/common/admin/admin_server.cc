@@ -240,10 +240,10 @@ void AdminServer::handleClient(int clientFd) {
   if (payloadLen > FLAGS_admin_max_payload_bytes) {
     MLOG_WARN("Payload too large: {} bytes (max {}) on {}",
               payloadLen, FLAGS_admin_max_payload_bytes, socketPath_);
-    // Send error response with ret_code = PayloadTooLarge.
+    // Send error response with ret_code = AdmPayloadTooLarge.
     // All admin response protos share sint32 ret_code as field 1.
     proto::common::SetGFlagValueResponsePB errResp;
-    errResp.set_ret_code(CommonErr::PayloadTooLarge);
+    errResp.set_ret_code(CommonErr::AdmPayloadTooLarge);
     std::string errBuf;
     errResp.SerializeToString(&errBuf);
     sendResponse(clientFd, static_cast<AdminMsgType>(typeRaw), errBuf);

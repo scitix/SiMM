@@ -43,7 +43,7 @@ DEFINE_COMMON_ERRCODE(GFlagSetFailed, -1201, "Failed to set Gflag value to targe
 // K8S related error codes
 DEFINE_COMMON_ERRCODE(GetPodIpFromK8SFailed, -1300, "Get pod IP from K8S failed")
 // Admin related error codes
-DEFINE_COMMON_ERRCODE(PayloadTooLarge, -1400, "Admin request payload exceeds max allowed size")
+DEFINE_COMMON_ERRCODE(AdmPayloadTooLarge, -1400, "Admin request payload exceeds max allowed size")
 // Other error codes (admin, internal, uknown, etc.)
 DEFINE_COMMON_ERRCODE(TargetNotFound, -1900, "Target resource not found")
 DEFINE_COMMON_ERRCODE(TargetUnavailable, -1901, "Target resource unavailable")
