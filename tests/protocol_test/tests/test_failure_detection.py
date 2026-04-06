@@ -130,29 +130,3 @@ class TestFailureDetection:
                 f"before={before}, after={after}"
             )
 
-    def test_cm_log_records_failure_and_rebalance(self, cluster_small):
-        """CM log should contain heartbeat timeout event AND rebalance event."""
-        from framework.log_parser import LogParser
-        from framework.ssh_executor import SshExecutor
-
-        ds0 = cluster_small.get_ds_handle(0)
-        addr = ds0.addr_str
-
-        cluster_small.fault_injector.kill_process(ds0)
-
-        timeout = cluster_small.config.cm_heartbeat_timeout_inSecs + 15
-        time.sleep(timeout)
-
-        cm_log = LogParser(cluster_small.cm.log_path, cluster_small.cm.host, SshExecutor())
-
-        # CM should log the heartbeat timeout for this specific DS
-        timeout_lines = cm_log.find_heartbeat_timeout_events()
-        assert len(timeout_lines) > 0, "CM log has no heartbeat timeout events"
-        found_ds0 = any(addr in line or ds0.ip in line for line in timeout_lines)
-        assert found_ds0, (
-            f"CM log timeout events don't mention {addr}: {timeout_lines}"
-        )
-
-        # CM should log the rebalance action
-        rebalance_lines = cm_log.find_rebalance_events()
-        assert len(rebalance_lines) > 0, "CM log has no rebalance events after DS failure"

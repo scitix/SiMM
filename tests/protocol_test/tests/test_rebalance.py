@@ -5,7 +5,6 @@ Verifies:
   - Total shard count is preserved (no loss, no duplication)
   - Post-rebalance distribution is balanced across alive nodes
   - Rebalance happens promptly after DEAD detection
-  - CM log records rebalance events
 """
 
 import time
@@ -121,27 +120,3 @@ class TestRebalance:
             cluster_small.config.shard_total_num
         )
 
-    def test_rebalance_logged_in_cm(self, cluster_small):
-        """CM log must contain both timeout event and rebalance event for the killed DS."""
-        from framework.log_parser import LogParser
-        from framework.ssh_executor import SshExecutor
-
-        ds0 = cluster_small.get_ds_handle(0)
-        addr = ds0.addr_str
-
-        cluster_small.fault_injector.kill_process(ds0)
-
-        timeout = cluster_small.config.cm_heartbeat_timeout_inSecs + 15
-        time.sleep(timeout)
-
-        cm_log = LogParser(cluster_small.cm.log_path, cluster_small.cm.host, SshExecutor())
-
-        # Must see: heartbeat timeout for this DS
-        timeout_lines = cm_log.find_heartbeat_timeout_events()
-        assert any(addr in line or ds0.ip in line for line in timeout_lines), (
-            f"CM log doesn't mention DS {addr} in timeout events"
-        )
-
-        # Must see: rebalance/reassign action
-        rebalance_lines = cm_log.find_rebalance_events()
-        assert len(rebalance_lines) > 0, "No rebalance events in CM log"

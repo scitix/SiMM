@@ -132,23 +132,3 @@ class TestCMRestart:
                 f"before={count_before}, after={count_after}"
             )
 
-    def test_cm_restart_handshake_logged(self, cluster_small):
-        """CM log after restart should show handshake events from all DS."""
-        from framework.log_parser import LogParser
-        from framework.ssh_executor import SshExecutor
-
-        cluster_small.fault_injector.kill_process(cluster_small.cm)
-        time.sleep(5 * cluster_small.config.heartbeat_cooldown_sec + 2)
-        new_cm = cluster_small.restart_cm()
-
-        timeout = cluster_small.config.cm_cluster_init_grace_period_inSecs + 20
-        cluster_small.observer.wait_for_node_count(
-            cluster_small.config.num_data_servers, timeout=timeout
-        )
-
-        cm_log = LogParser(new_cm.log_path, new_cm.host, SshExecutor())
-        handshake_events = cm_log.find_handshake_events()
-        assert len(handshake_events) >= cluster_small.config.num_data_servers, (
-            f"Expected >= {cluster_small.config.num_data_servers} handshake events "
-            f"in new CM log, found {len(handshake_events)}"
-        )

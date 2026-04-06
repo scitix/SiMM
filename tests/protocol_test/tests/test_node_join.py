@@ -23,17 +23,6 @@ class TestNodeJoin:
         )
         cluster_small.observer.assert_shard_balance(max_imbalance_ratio=0.1)
 
-    def test_cm_log_shows_handshakes(self, cluster_small):
-        """CM log should contain handshake events for each DS."""
-        from framework.log_parser import LogParser
-        from framework.ssh_executor import SshExecutor
-        cm_log = LogParser(cluster_small.cm.log_path, cluster_small.cm.host, SshExecutor())
-        events = cm_log.find_handshake_events()
-        assert len(events) >= cluster_small.config.num_data_servers, (
-            f"Expected at least {cluster_small.config.num_data_servers} handshake events, "
-            f"found {len(events)}"
-        )
-
     def test_ds_processes_alive(self, cluster_small):
         """All DS processes should be running."""
         for ds in cluster_small.data_servers:

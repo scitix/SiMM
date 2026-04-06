@@ -14,7 +14,6 @@ from .admin_client import AdminClient
 from .cluster_observer import ClusterObserver
 from .config import ClusterConfig
 from .fault_injector import FaultInjector
-from .log_parser import LogParser
 from .port_allocator import PortAllocator
 from .process_manager import ProcessHandle, ProcessManager
 from .ssh_executor import SshConfig, SshExecutor
@@ -142,17 +141,9 @@ class SimmCluster:
             self._start_single_machine()
 
         # Initialize observer and fault injector
-        cm_log_parser = LogParser(self.cm.log_path, self.cm.host, self._ssh)
-        ds_log_parsers = {
-            ds.addr_str: LogParser(ds.log_path, ds.host, self._ssh)
-            for ds in self.data_servers
-        }
-
         self.observer = ClusterObserver(
             admin_client=self._admin_client,
             cm_handle=self.cm,
-            cm_log_parser=cm_log_parser,
-            ds_log_parsers=ds_log_parsers,
         )
 
         self.fault_injector = FaultInjector(self._process_manager, self._ssh)
@@ -289,11 +280,9 @@ class SimmCluster:
         new_cm = self._process_manager.restart(self.cm)
         self.cm = new_cm
 
-        cm_log_parser = LogParser(new_cm.log_path, new_cm.host, self._ssh)
         self.observer = ClusterObserver(
             admin_client=self._admin_client,
             cm_handle=new_cm,
-            cm_log_parser=cm_log_parser,
         )
         logger.info("CM restarted: pid=%d on %s", new_cm.pid, new_cm.host)
         return new_cm

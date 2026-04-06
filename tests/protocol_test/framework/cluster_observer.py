@@ -5,7 +5,6 @@ import math
 import time
 
 from .admin_client import AdminClient, AdminClientError, NodeInfo
-from .log_parser import LogParser
 from .process_manager import ProcessHandle
 
 logger = logging.getLogger(__name__)
@@ -14,20 +13,16 @@ logger = logging.getLogger(__name__)
 class ClusterObserver:
     """
     Queries cluster state and waits for conditions.
-    Uses AdminClient (UDS-based) as primary path, falls back to LogParser.
+    Uses AdminClient (UDS-based) for all state queries.
     """
 
     def __init__(
         self,
         admin_client: AdminClient,
         cm_handle: ProcessHandle,
-        cm_log_parser: LogParser,
-        ds_log_parsers: dict[str, LogParser] | None = None,
     ):
         self._admin = admin_client
         self._cm = cm_handle
-        self._cm_log = cm_log_parser
-        self._ds_logs = ds_log_parsers or {}
 
     @property
     def admin_client(self) -> AdminClient:
@@ -219,10 +214,6 @@ class ClusterObserver:
         return False
 
     # --- DS-side status verification (via UDS admin, requires PID) ---
-
-    def get_ds_log_parser(self, node_addr: str) -> LogParser | None:
-        """Get LogParser for a specific DS by its addr_str."""
-        return self._ds_logs.get(node_addr)
 
     def get_ds_status(self, ds_host: str, ds_pid: int) -> dict[str, str]:
         """Query DS internal status via UDS admin (simmctl --pid <PID> ds status).
