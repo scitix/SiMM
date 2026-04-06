@@ -84,10 +84,10 @@ class SimmCluster:
         # Detect RDMA availability
         self._use_rpc = not os.environ.get("SIMM_TEST_NO_RDMA")
 
-        # Admin client — runs locally, connects to remote nodes via RPC
-        ctl_bin = Path(default_binary_dir) / "simm_ctl_admin"
-        flags_bin = Path(default_binary_dir) / "simm_flags_admin"
-        self._admin_client = AdminClient(ctl_bin, flags_bin)
+        # Admin client — runs simmctl on target nodes via SSH/local subprocess
+        ctl_path = str(Path(default_binary_dir) / "tools" / "simmctl")
+        flags_path = str(Path(default_binary_dir) / "tools" / "simm_flags_admin")
+        self._admin_client = AdminClient(self._ssh, ctl_path, flags_path)
 
         # State
         self.cm: ProcessHandle | None = None

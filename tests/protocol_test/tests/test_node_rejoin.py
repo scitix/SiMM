@@ -52,12 +52,12 @@ class TestNodeRejoin:
 
         # DS-side: verify internal state recovered
         assert cluster_small.observer.wait_for_ds_registered(
-            ds0.pid, timeout=10
+            ds0.host, ds0.pid, timeout=10
         ), "DS did not report registered after rejoin"
 
-        cluster_small.observer.assert_ds_cm_ready(ds0.pid, expected=True)
+        cluster_small.observer.assert_ds_cm_ready(ds0.host, ds0.pid, expected=True)
         cluster_small.observer.assert_ds_heartbeat_failure_count(
-            ds0.pid, min_count=0, max_count=0
+            ds0.host, ds0.pid, min_count=0, max_count=0
         )
 
         # Shard total still correct
@@ -86,8 +86,8 @@ class TestNodeRejoin:
         )
 
         # Final state: registered and cm_ready
-        cluster_small.observer.assert_ds_is_registered(ds0.pid)
-        cluster_small.observer.assert_ds_cm_ready(ds0.pid, expected=True)
+        cluster_small.observer.assert_ds_is_registered(ds0.host, ds0.pid)
+        cluster_small.observer.assert_ds_cm_ready(ds0.host, ds0.pid, expected=True)
 
     def test_ds_restart_rejoin(self, cluster_small):
         """Kill DS0, wait for DEAD + shard migration, restart, verify re-registration."""
@@ -123,7 +123,7 @@ class TestNodeRejoin:
 
         # DS side: new DS should be registered and cm_ready
         assert cluster_small.observer.wait_for_ds_registered(
-            new_ds.pid, timeout=10
+            new_ds.host, new_ds.pid, timeout=10
         ), "Restarted DS did not report registered"
 
         # Shard total correct

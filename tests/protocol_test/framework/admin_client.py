@@ -1,14 +1,14 @@
-"""Non-invasive admin client wrapping simm_ctl_admin CLI tool via UDS mode.
+"""Non-invasive admin client wrapping simmctl CLI tool via UDS mode.
 
 All commands are sent through Unix domain sockets (--pid <PID>).
-The simmctl binary runs locally and connects to the target process's
-admin socket at /run/simm/admin_{cm,ds}.<pid>.sock.
+For remote hosts, simmctl is executed via SSH on the target node.
+For local hosts, simmctl runs as a direct subprocess.
 """
 
 import logging
-import subprocess
 from dataclasses import dataclass
-from pathlib import Path
+
+from .ssh_executor import SshExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -29,65 +29,74 @@ class AdminClientError(Exception):
 
 class AdminClient:
     """
-    Wraps simm_ctl_admin (simmctl) as subprocess calls via UDS mode (--pid).
+    Wraps simmctl as subprocess/SSH calls via UDS mode (--pid).
     Parses tabulate output to extract structured data.
+
+    For local processes, runs simmctl as a direct subprocess.
+    For remote processes, runs simmctl on the target host via SSH.
     """
 
-    def __init__(self, ctl_binary: Path, flags_binary: Path,
+    def __init__(self, ssh: SshExecutor, ctl_path: str, flags_path: str,
                  default_timeout: float = 10.0):
-        self._ctl = Path(ctl_binary)
-        self._flags = Path(flags_binary)
+        """
+        Args:
+            ssh: SshExecutor for running commands on local/remote hosts.
+            ctl_path: Path to simmctl binary on target hosts.
+            flags_path: Path to simm_flags_admin binary on target hosts.
+            default_timeout: Default command timeout in seconds.
+        """
+        self._ssh = ssh
+        self._ctl_path = ctl_path
+        self._flags_path = flags_path
         self._timeout = default_timeout
 
-    def _run_ctl_uds(self, pid: int, args: list[str],
+    def _run_ctl_uds(self, host: str, pid: int, args: list[str],
                      timeout: float | None = None) -> str:
-        """Run simm_ctl_admin in UDS mode (--pid) and return stdout."""
-        cmd = [str(self._ctl), "--pid", str(pid)] + args
+        """Run simmctl in UDS mode (--pid) on the target host."""
+        parts = [self._ctl_path, "--pid", str(pid)] + args
+        cmd = " ".join(parts)
         timeout = timeout or self._timeout
-        logger.debug("Running: %s", " ".join(cmd))
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout
-            )
+            result = self._ssh.run(host, cmd, timeout=timeout, check=False)
             if result.returncode != 0:
                 raise AdminClientError(
-                    f"simm_ctl_admin failed (rc={result.returncode}): {result.stderr}"
+                    f"simmctl failed on {host} (rc={result.returncode}): "
+                    f"{result.stderr.strip()}"
                 )
             return result.stdout
-        except subprocess.TimeoutExpired:
-            raise AdminClientError(f"simm_ctl_admin timed out after {timeout}s")
-        except FileNotFoundError:
-            raise AdminClientError(f"simm_ctl_admin not found at {self._ctl}")
+        except AdminClientError:
+            raise
+        except Exception as e:
+            raise AdminClientError(f"simmctl failed on {host}: {e}")
 
-    def _run_flags_uds(self, pid: int, method: str,
+    def _run_flags_uds(self, host: str, pid: int, method: str,
                        flag: str = "", value: str = "",
                        timeout: float | None = None) -> str:
-        """Run simm_flags_admin in UDS mode (--pid) and return stdout."""
-        cmd = [
-            str(self._flags),
+        """Run simm_flags_admin in UDS mode (--pid) on the target host."""
+        parts = [
+            self._flags_path,
             f"--pid={pid}",
             f"--method={method}",
         ]
         if flag:
-            cmd.append(f"--flag={flag}")
+            parts.append(f"--flag={flag}")
         if value:
-            cmd.append(f"--value={value}")
+            parts.append(f"--value={value}")
 
+        cmd = " ".join(parts)
         timeout = timeout or self._timeout
-        logger.debug("Running: %s", " ".join(cmd))
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout
-            )
+            result = self._ssh.run(host, cmd, timeout=timeout, check=False)
             if result.returncode != 0:
                 raise AdminClientError(
-                    f"simm_flags_admin failed (rc={result.returncode}): {result.stderr}"
+                    f"simm_flags_admin failed on {host} (rc={result.returncode}): "
+                    f"{result.stderr.strip()}"
                 )
             return result.stdout
-        except subprocess.TimeoutExpired:
-            raise AdminClientError(f"simm_flags_admin timed out after {timeout}s")
-        except FileNotFoundError:
-            raise AdminClientError(f"simm_flags_admin not found at {self._flags}")
+        except AdminClientError:
+            raise
+        except Exception as e:
+            raise AdminClientError(f"simm_flags_admin failed on {host}: {e}")
 
     @staticmethod
     def _parse_tabulate_rows(output: str) -> list[list[str]]:
@@ -110,13 +119,13 @@ class AdminClient:
 
     # --- Node operations (via CM admin UDS) ---
 
-    def list_nodes(self, cm_pid: int,
+    def list_nodes(self, host: str, cm_pid: int,
                    verbose: bool = False) -> list[NodeInfo]:
-        """List all nodes via simm_ctl_admin --pid <CM_PID> node list."""
+        """List all nodes via simmctl --pid <CM_PID> node list."""
         args = ["node", "list"]
         if verbose:
             args.append("--verbose")
-        output = self._run_ctl_uds(cm_pid, args)
+        output = self._run_ctl_uds(host, cm_pid, args)
         rows = self._parse_tabulate_rows(output)
 
         nodes = []
@@ -135,12 +144,12 @@ class AdminClient:
 
     # --- Shard operations (via CM admin UDS) ---
 
-    def list_shards(self, cm_pid: int) -> dict[str, int]:
+    def list_shards(self, host: str, cm_pid: int) -> dict[str, int]:
         """
-        List shard distribution via simm_ctl_admin --pid <CM_PID> shard list.
+        List shard distribution via simmctl --pid <CM_PID> shard list.
         Returns {node_addr: shard_count}.
         """
-        output = self._run_ctl_uds(cm_pid, ["shard", "list"])
+        output = self._run_ctl_uds(host, cm_pid, ["shard", "list"])
         rows = self._parse_tabulate_rows(output)
 
         distribution: dict[str, int] = {}
@@ -149,12 +158,12 @@ class AdminClient:
                 distribution[row[0]] = int(row[1])
         return distribution
 
-    def list_shards_verbose(self, cm_pid: int) -> dict[str, list[int]]:
+    def list_shards_verbose(self, host: str, cm_pid: int) -> dict[str, list[int]]:
         """
-        List detailed shard assignment via simm_ctl_admin --pid <CM_PID> shard list --verbose.
+        List detailed shard assignment via simmctl --pid <CM_PID> shard list --verbose.
         Returns {node_addr: [shard_ids]}.
         """
-        output = self._run_ctl_uds(cm_pid,
+        output = self._run_ctl_uds(host, cm_pid,
                                    ["shard", "list", "--verbose"])
         rows = self._parse_tabulate_rows(output)
 
@@ -167,15 +176,15 @@ class AdminClient:
 
     # --- DS status operations (via DS admin UDS) ---
 
-    def get_ds_status(self, ds_pid: int) -> dict[str, str]:
+    def get_ds_status(self, host: str, ds_pid: int) -> dict[str, str]:
         """
-        Query DS internal status via simm_ctl_admin --pid <PID> ds status.
-        Uses Unix domain socket /run/simm/admin_ds.<pid>.sock on the DS host.
+        Query DS internal status via simmctl --pid <PID> ds status.
+        Runs on the DS host to access /run/simm/admin_ds.<pid>.sock.
         Returns {"is_registered": "true"/"false",
                  "cm_ready": "true"/"false",
                  "heartbeat_failure_count": "N"}.
         """
-        output = self._run_ctl_uds(ds_pid, ["ds", "status"])
+        output = self._run_ctl_uds(host, ds_pid, ["ds", "status"])
         rows = self._parse_tabulate_rows(output)
         status = {}
         for row in rows[1:]:  # skip header
@@ -185,10 +194,10 @@ class AdminClient:
 
     # --- GFlag operations (via UDS) ---
 
-    def get_flag(self, pid: int, flag_name: str) -> str | None:
+    def get_flag(self, host: str, pid: int, flag_name: str) -> str | None:
         """Get a single flag value via UDS."""
         try:
-            output = self._run_ctl_uds(pid, ["gflag", "get", flag_name])
+            output = self._run_ctl_uds(host, pid, ["gflag", "get", flag_name])
             rows = self._parse_tabulate_rows(output)
             for row in rows:
                 if len(row) >= 2 and row[0] == "VALUE":
@@ -198,20 +207,20 @@ class AdminClient:
             logger.error("get_flag failed: %s", e)
             return None
 
-    def set_flag(self, pid: int,
+    def set_flag(self, host: str, pid: int,
                  flag_name: str, value: str) -> bool:
         """Set a flag value via UDS."""
         try:
-            self._run_ctl_uds(pid, ["gflag", "set", flag_name, value])
+            self._run_ctl_uds(host, pid, ["gflag", "set", flag_name, value])
             return True
         except AdminClientError as e:
             logger.error("set_flag failed: %s", e)
             return False
 
-    def list_flags(self, pid: int) -> dict[str, str]:
+    def list_flags(self, host: str, pid: int) -> dict[str, str]:
         """List all flags via UDS. Returns {flag_name: value}."""
         try:
-            output = self._run_ctl_uds(pid, ["gflag", "list"])
+            output = self._run_ctl_uds(host, pid, ["gflag", "list"])
             rows = self._parse_tabulate_rows(output)
             flags = {}
             for row in rows[1:]:  # skip header

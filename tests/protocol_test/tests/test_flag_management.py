@@ -14,14 +14,14 @@ class TestFlagManagement:
 
         # Set flag
         success = admin.set_flag(
-            cm.pid,
+            cm.host, cm.pid,
             "cm_heartbeat_timeout_inSecs", "15"
         )
         assert success, "Failed to set flag"
 
         # Verify
         val = admin.get_flag(
-            cm.pid,
+            cm.host, cm.pid,
             "cm_heartbeat_timeout_inSecs"
         )
         assert val == "15", f"Expected flag value '15', got '{val}'"
@@ -31,7 +31,7 @@ class TestFlagManagement:
         admin = cluster_small.observer.admin_client
         cm = cluster_small.cm
 
-        flags = admin.list_flags(cm.pid)
+        flags = admin.list_flags(cm.host, cm.pid)
         assert len(flags) > 0, "No flags returned"
 
         # Check some expected flags exist
@@ -49,14 +49,13 @@ class TestFlagManagement:
         ds0 = cluster_small.get_ds_handle(0)
 
         success = admin.set_flag(
-            ds0.pid,
+            ds0.host, ds0.pid,
             "heartbeat_cooldown_sec", "3"
         )
         assert success, "Failed to set DS flag"
 
         val = admin.get_flag(
-            ds0.pid,
+            ds0.host, ds0.pid,
             "heartbeat_cooldown_sec"
         )
         assert val == "3", f"Expected '3', got '{val}'"
-

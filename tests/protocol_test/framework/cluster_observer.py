@@ -39,7 +39,7 @@ class ClusterObserver:
 
     def _list_nodes(self) -> list[NodeInfo]:
         try:
-            return self._admin.list_nodes(self._cm.pid)
+            return self._admin.list_nodes(self._cm.host, self._cm.pid)
         except AdminClientError:
             return []
 
@@ -63,7 +63,7 @@ class ClusterObserver:
     def get_shard_distribution(self) -> dict[str, int]:
         """Returns {node_addr: shard_count}."""
         try:
-            return self._admin.list_shards(self._cm.pid)
+            return self._admin.list_shards(self._cm.host, self._cm.pid)
         except AdminClientError:
             return {}
 
@@ -242,27 +242,28 @@ class ClusterObserver:
         """Get LogParser for a specific DS by its addr_str."""
         return self._ds_logs.get(node_addr)
 
-    def get_ds_status(self, ds_pid: int) -> dict[str, str]:
-        """Query DS internal status via UDS admin (simm_ctl_admin --pid <PID> ds status).
+    def get_ds_status(self, ds_host: str, ds_pid: int) -> dict[str, str]:
+        """Query DS internal status via UDS admin (simmctl --pid <PID> ds status).
         Returns {"is_registered": "true/false", "cm_ready": "true/false",
                  "heartbeat_failure_count": "N"}.
         """
         try:
-            return self._admin.get_ds_status(ds_pid)
+            return self._admin.get_ds_status(ds_host, ds_pid)
         except AdminClientError:
             return {}
 
-    def assert_ds_is_registered(self, ds_pid: int) -> None:
+    def assert_ds_is_registered(self, ds_host: str, ds_pid: int) -> None:
         """Assert DS reports itself as registered with CM."""
-        status = self.get_ds_status(ds_pid)
+        status = self.get_ds_status(ds_host, ds_pid)
         assert status.get("is_registered") == "true", (
             f"DS pid={ds_pid} is_registered={status.get('is_registered')}, "
             f"expected true"
         )
 
-    def assert_ds_cm_ready(self, ds_pid: int, expected: bool = True) -> None:
+    def assert_ds_cm_ready(self, ds_host: str, ds_pid: int,
+                           expected: bool = True) -> None:
         """Assert DS's cm_ready flag matches expected value."""
-        status = self.get_ds_status(ds_pid)
+        status = self.get_ds_status(ds_host, ds_pid)
         expected_str = "true" if expected else "false"
         assert status.get("cm_ready") == expected_str, (
             f"DS pid={ds_pid} cm_ready={status.get('cm_ready')}, "
@@ -270,11 +271,11 @@ class ClusterObserver:
         )
 
     def assert_ds_heartbeat_failure_count(
-        self, ds_pid: int, min_count: int = 0,
+        self, ds_host: str, ds_pid: int, min_count: int = 0,
         max_count: int | None = None
     ) -> None:
         """Assert DS heartbeat_failure_count within expected range."""
-        status = self.get_ds_status(ds_pid)
+        status = self.get_ds_status(ds_host, ds_pid)
         count_str = status.get("heartbeat_failure_count", "0")
         count = int(count_str)
         if min_count > 0:
@@ -289,13 +290,13 @@ class ClusterObserver:
             )
 
     def wait_for_ds_cm_not_ready(
-        self, ds_pid: int,
+        self, ds_host: str, ds_pid: int,
         timeout: float = 60, poll_interval: float = 1.0
     ) -> bool:
         """Wait until DS reports cm_ready=false (detected CM failure)."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            status = self.get_ds_status(ds_pid)
+            status = self.get_ds_status(ds_host, ds_pid)
             if status.get("cm_ready") == "false":
                 logger.info("DS pid=%d reports cm_ready=false", ds_pid)
                 return True
@@ -304,13 +305,13 @@ class ClusterObserver:
         return False
 
     def wait_for_ds_registered(
-        self, ds_pid: int,
+        self, ds_host: str, ds_pid: int,
         timeout: float = 60, poll_interval: float = 1.0
     ) -> bool:
         """Wait until DS reports is_registered=true and cm_ready=true."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            status = self.get_ds_status(ds_pid)
+            status = self.get_ds_status(ds_host, ds_pid)
             if (status.get("is_registered") == "true"
                     and status.get("cm_ready") == "true"):
                 logger.info("DS pid=%d registered and cm_ready", ds_pid)
