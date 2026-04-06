@@ -5,7 +5,7 @@ import pytest
 
 @pytest.mark.requires_rdma
 class TestFlagManagement:
-    """Verify runtime gflag get/set/list via admin RPC."""
+    """Verify runtime gflag get/set/list via admin UDS."""
 
     def test_runtime_flag_change(self, cluster_small):
         """Change heartbeat timeout at runtime via admin, verify new value."""
@@ -14,14 +14,14 @@ class TestFlagManagement:
 
         # Set flag
         success = admin.set_flag(
-            cm.ip, cm.ports["admin"],
+            cm.pid,
             "cm_heartbeat_timeout_inSecs", "15"
         )
         assert success, "Failed to set flag"
 
         # Verify
         val = admin.get_flag(
-            cm.ip, cm.ports["admin"],
+            cm.pid,
             "cm_heartbeat_timeout_inSecs"
         )
         assert val == "15", f"Expected flag value '15', got '{val}'"
@@ -31,7 +31,7 @@ class TestFlagManagement:
         admin = cluster_small.observer.admin_client
         cm = cluster_small.cm
 
-        flags = admin.list_flags(cm.ip, cm.ports["admin"])
+        flags = admin.list_flags(cm.pid)
         assert len(flags) > 0, "No flags returned"
 
         # Check some expected flags exist
@@ -49,25 +49,25 @@ class TestFlagManagement:
         ds0 = cluster_small.get_ds_handle(0)
 
         success = admin.set_flag(
-            ds0.ip, ds0.ports["admin"],
+            ds0.pid,
             "heartbeat_cooldown_sec", "3"
         )
         assert success, "Failed to set DS flag"
 
         val = admin.get_flag(
-            ds0.ip, ds0.ports["admin"],
+            ds0.pid,
             "heartbeat_cooldown_sec"
         )
         assert val == "3", f"Expected '3', got '{val}'"
 
     def test_manual_set_node_status(self, cluster_small):
-        """Use admin RPC to manually mark a node DEAD."""
+        """Use admin UDS to manually mark a node DEAD."""
         ds0 = cluster_small.get_ds_handle(0)
         admin = cluster_small.observer.admin_client
         cm = cluster_small.cm
 
         success = admin.set_node_status(
-            cm.ip, cm.ports["admin"],
+            cm.pid,
             ds0.addr_str, "DEAD"
         )
         assert success, "Failed to set node status"

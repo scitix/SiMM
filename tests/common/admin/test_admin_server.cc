@@ -3,14 +3,17 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
@@ -18,6 +21,7 @@
 #include "common/admin/admin_msg_types.h"
 #include "common/admin/admin_server.h"
 #include "common/errcode/errcode_def.h"
+#include "proto/cm_clnt_rpcs.pb.h"
 #include "proto/common.pb.h"
 
 // Test-only gflag for GFlag handler tests
@@ -593,6 +597,239 @@ TEST_F(AdminServerTest, StaleSocketFileOverwritten) {
 
   server.reset();
   ::unlink(stalePath.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end tests: AdminServer + simmctl binary via subprocess
+// ---------------------------------------------------------------------------
+
+// Helper: locate simmctl binary relative to the test binary.
+// Test binary: build/{mode}/bin/unit_tests/test_admin_server
+// simmctl:     build/{mode}/bin/tools/simmctl
+static std::string findSimmctlBinary() {
+  // Try via /proc/self/exe
+  char selfPath[4096];
+  ssize_t len = ::readlink("/proc/self/exe", selfPath, sizeof(selfPath) - 1);
+  if (len > 0) {
+    selfPath[len] = '\0';
+    std::string self(selfPath);
+    // Go up from unit_tests/ to bin/, then into tools/
+    auto pos = self.rfind('/');
+    if (pos != std::string::npos) {
+      std::string binDir = self.substr(0, pos);  // .../bin/unit_tests
+      pos = binDir.rfind('/');
+      if (pos != std::string::npos) {
+        binDir = binDir.substr(0, pos);  // .../bin
+        return binDir + "/tools/simmctl";
+      }
+    }
+  }
+  // Fallback: assume it's in PATH
+  return "simmctl";
+}
+
+// Run simmctl as subprocess and capture stdout/stderr/exit code.
+struct SimmctlResult {
+  int exitCode;
+  std::string stdoutStr;
+  std::string stderrStr;
+};
+
+static SimmctlResult runSimmctl(const std::vector<std::string>& args) {
+  std::string simmctl = findSimmctlBinary();
+  std::string cmd = simmctl;
+  for (const auto& arg : args) {
+    cmd += " " + arg;
+  }
+  cmd += " 2>/tmp/simmctl_test_stderr";
+
+  FILE* fp = popen(cmd.c_str(), "r");
+  SimmctlResult result;
+  result.exitCode = -1;
+  if (!fp) {
+    return result;
+  }
+
+  char buf[4096];
+  while (fgets(buf, sizeof(buf), fp)) {
+    result.stdoutStr += buf;
+  }
+  int status = pclose(fp);
+  result.exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+
+  // Read stderr
+  FILE* errFp = fopen("/tmp/simmctl_test_stderr", "r");
+  if (errFp) {
+    while (fgets(buf, sizeof(buf), errFp)) {
+      result.stderrStr += buf;
+    }
+    fclose(errFp);
+    ::unlink("/tmp/simmctl_test_stderr");
+  }
+
+  return result;
+}
+
+class SimmctlE2ETest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    ::mkdir("/run/simm", 0777);
+    pidStr_ = std::to_string(::getpid());
+  }
+
+  void TearDown() override {
+    server_.reset();
+  }
+
+  void createServer(const std::string& basePath) {
+    server_ = std::make_unique<AdminServer>(basePath);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  std::unique_ptr<AdminServer> server_;
+  std::string pidStr_;
+};
+
+TEST_F(SimmctlE2ETest, DsStatusViaPid) {
+  createServer("/run/simm/admin_ds");
+
+  // Register mock DS_STATUS handler
+  server_->registerHandler(AdminMsgType::DS_STATUS,
+      [](const std::string& /*payload*/) -> std::string {
+        proto::common::AdmDsStatusResponsePB resp;
+        resp.set_ret_code(CommonErr::OK);
+        resp.set_is_registered(true);
+        resp.set_cm_ready(true);
+        resp.set_heartbeat_failure_count(0);
+        std::string buf;
+        resp.SerializeToString(&buf);
+        return buf;
+      });
+
+  auto result = runSimmctl({"ds", "status", "--pid", pidStr_});
+  EXPECT_EQ(result.exitCode, 0) << "stderr: " << result.stderrStr;
+  EXPECT_NE(result.stdoutStr.find("is_registered"), std::string::npos);
+  EXPECT_NE(result.stdoutStr.find("true"), std::string::npos);
+  EXPECT_NE(result.stdoutStr.find("cm_ready"), std::string::npos);
+}
+
+TEST_F(SimmctlE2ETest, CmStatusViaPid) {
+  createServer("/run/simm/admin_cm");
+
+  server_->registerHandler(AdminMsgType::CM_STATUS,
+      [](const std::string& /*payload*/) -> std::string {
+        proto::common::AdmCmStatusResponsePB resp;
+        resp.set_ret_code(CommonErr::OK);
+        resp.set_is_running(true);
+        resp.set_service_ready(true);
+        resp.set_alive_node_count(3);
+        resp.set_dead_node_count(0);
+        resp.set_total_shard_count(64);
+        std::string buf;
+        resp.SerializeToString(&buf);
+        return buf;
+      });
+
+  auto result = runSimmctl({"cm", "status", "--pid", pidStr_});
+  EXPECT_EQ(result.exitCode, 0) << "stderr: " << result.stderrStr;
+  EXPECT_NE(result.stdoutStr.find("is_running"), std::string::npos);
+  EXPECT_NE(result.stdoutStr.find("true"), std::string::npos);
+  EXPECT_NE(result.stdoutStr.find("alive_node_count"), std::string::npos);
+  EXPECT_NE(result.stdoutStr.find("3"), std::string::npos);
+}
+
+TEST_F(SimmctlE2ETest, NodeListViaPid) {
+  createServer("/run/simm/admin_cm");
+
+  server_->registerHandler(AdminMsgType::NODE_LIST,
+      [](const std::string& /*payload*/) -> std::string {
+        ListNodesResponsePB resp;
+        resp.set_ret_code(CommonErr::OK);
+
+        auto* n1 = resp.add_nodes();
+        n1->mutable_node_address()->set_ip("10.0.0.2");
+        n1->mutable_node_address()->set_port(40000);
+        n1->set_node_status(1);  // RUNNING
+
+        auto* n2 = resp.add_nodes();
+        n2->mutable_node_address()->set_ip("10.0.0.3");
+        n2->mutable_node_address()->set_port(40000);
+        n2->set_node_status(0);  // DEAD
+
+        std::string buf;
+        resp.SerializeToString(&buf);
+        return buf;
+      });
+
+  auto result = runSimmctl({"node", "list", "--pid", pidStr_});
+  EXPECT_EQ(result.exitCode, 0) << "stderr: " << result.stderrStr;
+  EXPECT_NE(result.stdoutStr.find("10.0.0.2:40000"), std::string::npos);
+  EXPECT_NE(result.stdoutStr.find("RUNNING"), std::string::npos);
+  EXPECT_NE(result.stdoutStr.find("10.0.0.3:40000"), std::string::npos);
+  EXPECT_NE(result.stdoutStr.find("DEAD"), std::string::npos);
+}
+
+TEST_F(SimmctlE2ETest, ShardListViaPid) {
+  createServer("/run/simm/admin_cm");
+
+  server_->registerHandler(AdminMsgType::SHARD_LIST,
+      [](const std::string& /*payload*/) -> std::string {
+        QueryShardRoutingTableAllResponsePB resp;
+        resp.set_ret_code(CommonErr::OK);
+
+        auto* entry = resp.add_shard_info();
+        entry->mutable_data_server_address()->set_ip("10.0.0.2");
+        entry->mutable_data_server_address()->set_port(40000);
+        entry->add_shard_ids(0);
+        entry->add_shard_ids(1);
+        entry->add_shard_ids(2);
+
+        std::string buf;
+        resp.SerializeToString(&buf);
+        return buf;
+      });
+
+  auto result = runSimmctl({"shard", "list", "--pid", pidStr_});
+  EXPECT_EQ(result.exitCode, 0) << "stderr: " << result.stderrStr;
+  EXPECT_NE(result.stdoutStr.find("10.0.0.2:40000"), std::string::npos);
+  EXPECT_NE(result.stdoutStr.find("3"), std::string::npos);  // shard count
+}
+
+TEST_F(SimmctlE2ETest, GFlagGetViaPid) {
+  // gflag with --pid uses simm_trace.<pid>.sock path
+  createServer("/run/simm/simm_trace");
+
+  // Built-in gflag handler should work — test_admin_flag is defined in this binary.
+  // Note: a prior test (GFlagSetAndVerify) may have changed the value,
+  // so just verify the output structure, not the specific value.
+  auto result = runSimmctl({"gflag", "get", "test_admin_flag", "--pid", pidStr_});
+  EXPECT_EQ(result.exitCode, 0) << "stderr: " << result.stderrStr;
+  EXPECT_NE(result.stdoutStr.find("test_admin_flag"), std::string::npos);
+  EXPECT_NE(result.stdoutStr.find("VALUE"), std::string::npos);
+}
+
+TEST_F(SimmctlE2ETest, PidAndProcMutuallyExclusive) {
+  auto result = runSimmctl({"cm", "status", "--pid", "12345",
+                            "--proc", "cluster_manager"});
+  EXPECT_NE(result.exitCode, 0);
+  EXPECT_NE(result.stderrStr.find("mutually exclusive"), std::string::npos);
+}
+
+TEST_F(SimmctlE2ETest, ProcNotFound) {
+  // Use a process name that definitely doesn't exist
+  auto result = runSimmctl({"cm", "status", "--proc", "cluster_manager"});
+  // This will either fail because no cluster_manager is running,
+  // or succeed if one happens to be running. We only check the not-found case
+  // by using an unlikely process name via direct pgrep test.
+  // For a deterministic test, just verify --proc with invalid name fails.
+  auto result2 = runSimmctl({"cm", "status", "--proc", "nonexistent_proc_xyz"});
+  EXPECT_NE(result2.exitCode, 0);
+}
+
+TEST_F(SimmctlE2ETest, ProcInvalidName) {
+  auto result = runSimmctl({"cm", "status", "--proc", "invalid_name"});
+  EXPECT_NE(result.exitCode, 0);
+  EXPECT_NE(result.stderrStr.find("cluster_manager"), std::string::npos);
 }
 
 }  // namespace

@@ -8,6 +8,7 @@ foreach(test_file ${TEST_SOURCES})
     target_link_libraries(${test_name} PRIVATE
         simm_common
         common_proto
+        cm_clnt_proto
         gtest
         gtest_main
         folly)

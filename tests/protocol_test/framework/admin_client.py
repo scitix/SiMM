@@ -1,12 +1,11 @@
-"""Non-invasive admin client wrapping simm_ctl_admin and simm_flags_admin CLI tools.
+"""Non-invasive admin client wrapping simm_ctl_admin CLI tool via UDS mode.
 
-Admin CLI tools are always run locally on the test runner node. They communicate
-with remote CM/DS nodes via SiCL RPC (--ip/--port point to the remote node).
-No SSH is needed for admin operations.
+All commands are sent through Unix domain sockets (--pid <PID>).
+The simmctl binary runs locally and connects to the target process's
+admin socket at /run/simm/admin_{cm,ds}.<pid>.sock.
 """
 
 import logging
-import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,11 +29,8 @@ class AdminClientError(Exception):
 
 class AdminClient:
     """
-    Wraps simm_ctl_admin and simm_flags_admin as subprocess calls.
-    Parses their tabulate output to extract structured data.
-
-    These CLI tools run locally on the test runner and connect to
-    remote CM/DS nodes via RPC using the --ip/--port parameters.
+    Wraps simm_ctl_admin (simmctl) as subprocess calls via UDS mode (--pid).
+    Parses tabulate output to extract structured data.
     """
 
     def __init__(self, ctl_binary: Path, flags_binary: Path,
@@ -43,10 +39,10 @@ class AdminClient:
         self._flags = Path(flags_binary)
         self._timeout = default_timeout
 
-    def _run_ctl(self, ip: str, port: int, args: list[str],
-                 timeout: float | None = None) -> str:
-        """Run simm_ctl_admin and return stdout."""
-        cmd = [str(self._ctl), "--ip", ip, "--port", str(port)] + args
+    def _run_ctl_uds(self, pid: int, args: list[str],
+                     timeout: float | None = None) -> str:
+        """Run simm_ctl_admin in UDS mode (--pid) and return stdout."""
+        cmd = [str(self._ctl), "--pid", str(pid)] + args
         timeout = timeout or self._timeout
         logger.debug("Running: %s", " ".join(cmd))
         try:
@@ -63,14 +59,13 @@ class AdminClient:
         except FileNotFoundError:
             raise AdminClientError(f"simm_ctl_admin not found at {self._ctl}")
 
-    def _run_flags(self, ip: str, port: int, method: str,
-                   flag: str = "", value: str = "",
-                   timeout: float | None = None) -> str:
-        """Run simm_flags_admin and return stdout."""
+    def _run_flags_uds(self, pid: int, method: str,
+                       flag: str = "", value: str = "",
+                       timeout: float | None = None) -> str:
+        """Run simm_flags_admin in UDS mode (--pid) and return stdout."""
         cmd = [
             str(self._flags),
-            f"--ip={ip}",
-            f"--port={port}",
+            f"--pid={pid}",
             f"--method={method}",
         ]
         if flag:
@@ -113,15 +108,15 @@ class AdminClient:
                     rows.append(cells)
         return rows
 
-    # --- Node operations ---
+    # --- Node operations (via CM admin UDS) ---
 
-    def list_nodes(self, cm_ip: str, cm_admin_port: int,
+    def list_nodes(self, cm_pid: int,
                    verbose: bool = False) -> list[NodeInfo]:
-        """List all nodes via simm_ctl_admin node list."""
+        """List all nodes via simm_ctl_admin --pid <CM_PID> node list."""
         args = ["node", "list"]
         if verbose:
             args.append("--verbose")
-        output = self._run_ctl(cm_ip, cm_admin_port, args)
+        output = self._run_ctl_uds(cm_pid, args)
         rows = self._parse_tabulate_rows(output)
 
         nodes = []
@@ -138,25 +133,25 @@ class AdminClient:
                 nodes.append(NodeInfo(address=row[0], status=row[1]))
         return nodes
 
-    def set_node_status(self, cm_ip: str, cm_admin_port: int,
+    def set_node_status(self, cm_pid: int,
                         node_addr: str, status: str) -> bool:
-        """Set node status via simm_ctl_admin node set."""
+        """Set node status via simm_ctl_admin --pid <CM_PID> node set."""
         try:
-            self._run_ctl(cm_ip, cm_admin_port,
-                          ["node", "set", node_addr, status])
+            self._run_ctl_uds(cm_pid,
+                              ["node", "set", node_addr, status])
             return True
         except AdminClientError as e:
             logger.error("set_node_status failed: %s", e)
             return False
 
-    # --- Shard operations ---
+    # --- Shard operations (via CM admin UDS) ---
 
-    def list_shards(self, cm_ip: str, cm_admin_port: int) -> dict[str, int]:
+    def list_shards(self, cm_pid: int) -> dict[str, int]:
         """
-        List shard distribution via simm_ctl_admin shard list.
+        List shard distribution via simm_ctl_admin --pid <CM_PID> shard list.
         Returns {node_addr: shard_count}.
         """
-        output = self._run_ctl(cm_ip, cm_admin_port, ["shard", "list"])
+        output = self._run_ctl_uds(cm_pid, ["shard", "list"])
         rows = self._parse_tabulate_rows(output)
 
         distribution: dict[str, int] = {}
@@ -165,13 +160,13 @@ class AdminClient:
                 distribution[row[0]] = int(row[1])
         return distribution
 
-    def list_shards_verbose(self, cm_ip: str, cm_admin_port: int) -> dict[str, list[int]]:
+    def list_shards_verbose(self, cm_pid: int) -> dict[str, list[int]]:
         """
-        List detailed shard assignment via simm_ctl_admin shard list --verbose.
+        List detailed shard assignment via simm_ctl_admin --pid <CM_PID> shard list --verbose.
         Returns {node_addr: [shard_ids]}.
         """
-        output = self._run_ctl(cm_ip, cm_admin_port,
-                               ["shard", "list", "--verbose"])
+        output = self._run_ctl_uds(cm_pid,
+                                   ["shard", "list", "--verbose"])
         rows = self._parse_tabulate_rows(output)
 
         distribution: dict[str, list[int]] = {}
@@ -181,7 +176,7 @@ class AdminClient:
                 distribution[row[0]] = shard_ids
         return distribution
 
-    # --- DS status operations (via UDS, requires PID) ---
+    # --- DS status operations (via DS admin UDS) ---
 
     def get_ds_status(self, ds_pid: int) -> dict[str, str]:
         """
@@ -191,45 +186,21 @@ class AdminClient:
                  "cm_ready": "true"/"false",
                  "heartbeat_failure_count": "N"}.
         """
-        cmd = [
-            str(self._ctl),
-            "--pid", str(ds_pid),
-            "ds", "status",
-        ]
-        timeout = self._timeout
-        logger.debug("Running: %s", " ".join(cmd))
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout
-            )
-            if result.returncode != 0:
-                raise AdminClientError(
-                    f"simm_ctl_admin ds status failed (rc={result.returncode}): "
-                    f"{result.stderr}"
-                )
-            rows = self._parse_tabulate_rows(result.stdout)
-            status = {}
-            for row in rows[1:]:  # skip header
-                if len(row) >= 2:
-                    status[row[0]] = row[1]
-            return status
-        except subprocess.TimeoutExpired:
-            raise AdminClientError(
-                f"simm_ctl_admin ds status timed out after {timeout}s"
-            )
-        except FileNotFoundError:
-            raise AdminClientError(
-                f"simm_ctl_admin not found at {self._ctl}"
-            )
+        output = self._run_ctl_uds(ds_pid, ["ds", "status"])
+        rows = self._parse_tabulate_rows(output)
+        status = {}
+        for row in rows[1:]:  # skip header
+            if len(row) >= 2:
+                status[row[0]] = row[1]
+        return status
 
-    # --- GFlag operations ---
+    # --- GFlag operations (via UDS) ---
 
-    def get_flag(self, ip: str, port: int, flag_name: str) -> str | None:
-        """Get a single flag value."""
+    def get_flag(self, pid: int, flag_name: str) -> str | None:
+        """Get a single flag value via UDS."""
         try:
-            output = self._run_flags(ip, port, "get", flag=flag_name)
+            output = self._run_ctl_uds(pid, ["gflag", "get", flag_name])
             rows = self._parse_tabulate_rows(output)
-            # Output format: two-column table with "Flag Name" / "VALUE" rows
             for row in rows:
                 if len(row) >= 2 and row[0] == "VALUE":
                     return row[1]
@@ -238,20 +209,20 @@ class AdminClient:
             logger.error("get_flag failed: %s", e)
             return None
 
-    def set_flag(self, ip: str, port: int,
+    def set_flag(self, pid: int,
                  flag_name: str, value: str) -> bool:
-        """Set a flag value."""
+        """Set a flag value via UDS."""
         try:
-            self._run_flags(ip, port, "set", flag=flag_name, value=value)
+            self._run_ctl_uds(pid, ["gflag", "set", flag_name, value])
             return True
         except AdminClientError as e:
             logger.error("set_flag failed: %s", e)
             return False
 
-    def list_flags(self, ip: str, port: int) -> dict[str, str]:
-        """List all flags. Returns {flag_name: value}."""
+    def list_flags(self, pid: int) -> dict[str, str]:
+        """List all flags via UDS. Returns {flag_name: value}."""
         try:
-            output = self._run_flags(ip, port, "list")
+            output = self._run_ctl_uds(pid, ["gflag", "list"])
             rows = self._parse_tabulate_rows(output)
             flags = {}
             for row in rows[1:]:  # skip header

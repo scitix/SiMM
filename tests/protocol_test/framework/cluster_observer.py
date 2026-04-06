@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class ClusterObserver:
     """
     Queries cluster state and waits for conditions.
-    Uses AdminClient (RPC-based) as primary path, falls back to LogParser.
+    Uses AdminClient (UDS-based) as primary path, falls back to LogParser.
     """
 
     def __init__(
@@ -39,9 +39,7 @@ class ClusterObserver:
 
     def _list_nodes(self) -> list[NodeInfo]:
         try:
-            return self._admin.list_nodes(
-                self._cm.ip, self._cm.ports["admin"]
-            )
+            return self._admin.list_nodes(self._cm.pid)
         except AdminClientError:
             return []
 
@@ -65,9 +63,7 @@ class ClusterObserver:
     def get_shard_distribution(self) -> dict[str, int]:
         """Returns {node_addr: shard_count}."""
         try:
-            return self._admin.list_shards(
-                self._cm.ip, self._cm.ports["admin"]
-            )
+            return self._admin.list_shards(self._cm.pid)
         except AdminClientError:
             return {}
 

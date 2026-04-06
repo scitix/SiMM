@@ -219,7 +219,7 @@ def _validate_ds_status(cluster: SimmCluster, step: ValidationStep):
     expected: the expected value as string.
     """
     handle = _resolve_target(cluster, step.target)
-    status = cluster.observer.get_ds_status(handle.ip, handle.ports["admin"])
+    status = cluster.observer.get_ds_status(handle.pid)
     actual = status.get(step.field, "")
     assert actual == step.expected, (
         f"DS {handle.addr_str} {step.field}={actual}, expected {step.expected}"
