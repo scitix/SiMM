@@ -81,9 +81,6 @@ class SimmCluster:
             self._port_allocator, self._ssh,
         )
 
-        # Detect RDMA availability
-        self._use_rpc = not os.environ.get("SIMM_TEST_NO_RDMA")
-
         # Admin client — runs simmctl on target nodes via SSH/local subprocess
         ctl_path = str(Path(default_binary_dir) / "tools" / "simmctl")
         flags_path = str(Path(default_binary_dir) / "tools" / "simm_flags_admin")
@@ -156,7 +153,6 @@ class SimmCluster:
             cm_handle=self.cm,
             cm_log_parser=cm_log_parser,
             ds_log_parsers=ds_log_parsers,
-            use_admin_rpc=self._use_rpc,
         )
 
         self.fault_injector = FaultInjector(self._process_manager, self._ssh)
@@ -264,16 +260,10 @@ class SimmCluster:
                     f"DS[{ds.index}] died during startup. Log:\n{ds_log[-2000:]}"
                 )
 
-        # Try to verify via admin RPC if available
-        if self._use_rpc:
-            if not self.observer.wait_for_node_count(
-                self.config.num_data_servers, timeout=timeout - grace_wait
-            ):
-                logger.warning("Not all DS registered within timeout (via RPC)")
-        else:
-            cm_log = LogParser(self.cm.log_path, self.cm.host, self._ssh)
-            events = cm_log.find_handshake_events()
-            logger.info("Found %d handshake events in CM log", len(events))
+        if not self.observer.wait_for_node_count(
+            self.config.num_data_servers, timeout=timeout - grace_wait
+        ):
+            logger.warning("Not all DS registered within timeout")
 
         logger.info("Cluster ready")
 
@@ -304,7 +294,6 @@ class SimmCluster:
             admin_client=self._admin_client,
             cm_handle=new_cm,
             cm_log_parser=cm_log_parser,
-            use_admin_rpc=self._use_rpc,
         )
         logger.info("CM restarted: pid=%d on %s", new_cm.pid, new_cm.host)
         return new_cm

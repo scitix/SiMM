@@ -23,13 +23,11 @@ class ClusterObserver:
         cm_handle: ProcessHandle,
         cm_log_parser: LogParser,
         ds_log_parsers: dict[str, LogParser] | None = None,
-        use_admin_rpc: bool = True,
     ):
         self._admin = admin_client
         self._cm = cm_handle
         self._cm_log = cm_log_parser
         self._ds_logs = ds_log_parsers or {}
-        self._use_rpc = use_admin_rpc
 
     @property
     def admin_client(self) -> AdminClient:
@@ -80,19 +78,13 @@ class ClusterObserver:
         """Wait until the node count matches expected."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self._use_rpc:
-                count = self.get_alive_node_count() if alive_only else len(self._list_nodes())
-                if count == expected:
-                    logger.info("Node count reached %d", expected)
-                    return True
-            else:
-                # Fallback: count handshake events in CM log
-                events = self._cm_log.find_handshake_events()
-                if len(events) >= expected:
-                    return True
+            count = self.get_alive_node_count() if alive_only else len(self._list_nodes())
+            if count == expected:
+                logger.info("Node count reached %d", expected)
+                return True
             time.sleep(poll_interval)
-        logger.warning("Timed out waiting for node count=%d (current=%s)",
-                       expected, self.get_alive_node_count() if self._use_rpc else "unknown")
+        logger.warning("Timed out waiting for node count=%d (current=%d)",
+                       expected, self.get_alive_node_count())
         return False
 
     def wait_for_node_status(
@@ -102,16 +94,10 @@ class ClusterObserver:
         """Wait until a specific node has the expected status."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self._use_rpc:
-                current = self.get_node_status(node_addr)
-                if current == status:
-                    logger.info("Node %s is now %s", node_addr, status)
-                    return True
-            else:
-                # Fallback: look for status change in log
-                pattern = f"{node_addr}.*{status}|{status}.*{node_addr}"
-                if self._cm_log.contains(pattern):
-                    return True
+            current = self.get_node_status(node_addr)
+            if current == status:
+                logger.info("Node %s is now %s", node_addr, status)
+                return True
             time.sleep(poll_interval)
         logger.warning("Timed out waiting for node %s to become %s", node_addr, status)
         return False
@@ -138,17 +124,13 @@ class ClusterObserver:
         """Wait until no shard is assigned to a DEAD node."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self._use_rpc:
-                node_statuses = self.get_all_node_statuses()
-                shard_dist = self.get_shard_distribution()
-                dead_nodes = {addr for addr, s in node_statuses.items() if s == "DEAD"}
-                orphaned = any(addr in dead_nodes for addr in shard_dist if shard_dist[addr] > 0)
-                if not orphaned:
-                    logger.info("Rebalance complete, no orphaned shards")
-                    return True
-            else:
-                if self._cm_log.find_rebalance_events():
-                    return True
+            node_statuses = self.get_all_node_statuses()
+            shard_dist = self.get_shard_distribution()
+            dead_nodes = {addr for addr, s in node_statuses.items() if s == "DEAD"}
+            orphaned = any(addr in dead_nodes for addr in shard_dist if shard_dist[addr] > 0)
+            if not orphaned:
+                logger.info("Rebalance complete, no orphaned shards")
+                return True
             time.sleep(poll_interval)
         logger.warning("Timed out waiting for rebalance to complete")
         return False

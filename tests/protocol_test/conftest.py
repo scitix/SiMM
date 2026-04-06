@@ -33,14 +33,6 @@ from framework.config import ClusterConfig, HostConfig, dict_to_cluster_config, 
 logger = logging.getLogger(__name__)
 
 
-def detect_rdma_available() -> bool:
-    """Check if RDMA hardware is available."""
-    if os.environ.get("SIMM_TEST_NO_RDMA"):
-        return False
-    ib_dir = Path("/sys/class/infiniband")
-    return ib_dir.exists() and bool(list(ib_dir.iterdir()))
-
-
 def detect_root() -> bool:
     return os.geteuid() == 0
 
@@ -93,11 +85,6 @@ def _make_config(
         register_cooldown_sec=register_cooldown_sec,
         memory_limit_bytes=memory_limit_bytes,
     )
-
-
-@pytest.fixture(scope="session")
-def has_rdma():
-    return detect_rdma_available()
 
 
 @pytest.fixture(scope="session")

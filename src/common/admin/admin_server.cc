@@ -259,9 +259,30 @@ void AdminServer::handleClient(int clientFd) {
   std::shared_lock lock(handlersMutex_);
   auto it = handlers_.find(typeRaw);
   if (it != handlers_.end()) {
-    std::string response = it->second(payload);
-    lock.unlock();
-    sendResponse(clientFd, static_cast<AdminMsgType>(typeRaw), response);
+    try {
+      std::string response = it->second(payload);
+      lock.unlock();
+      sendResponse(clientFd, static_cast<AdminMsgType>(typeRaw), response);
+    } catch (const std::exception& e) {
+      lock.unlock();
+      MLOG_ERROR("Admin handler threw exception for MsgType {} on {}: {}",
+                 typeRaw, socketPath_, e.what());
+      // All admin response protos share sint32 ret_code as field 1.
+      proto::common::SetGFlagValueResponsePB errResp;
+      errResp.set_ret_code(CommonErr::AdmInternalError);
+      std::string errBuf;
+      errResp.SerializeToString(&errBuf);
+      sendResponse(clientFd, static_cast<AdminMsgType>(typeRaw), errBuf);
+    } catch (...) {
+      lock.unlock();
+      MLOG_ERROR("Admin handler threw unknown exception for MsgType {} on {}",
+                 typeRaw, socketPath_);
+      proto::common::SetGFlagValueResponsePB errResp;
+      errResp.set_ret_code(CommonErr::AdmInternalError);
+      std::string errBuf;
+      errResp.SerializeToString(&errBuf);
+      sendResponse(clientFd, static_cast<AdminMsgType>(typeRaw), errBuf);
+    }
   } else {
     lock.unlock();
     MLOG_WARN("No handler for AdminMsgType {} on {}", typeRaw, socketPath_);
