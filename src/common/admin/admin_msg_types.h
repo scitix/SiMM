@@ -16,8 +16,7 @@ enum class AdminMsgType : uint16_t {
   DS_STATUS    = 5,
   CM_STATUS    = 6,
   NODE_LIST    = 7,
-  NODE_SET     = 8,
-  SHARD_LIST   = 9,
+  SHARD_LIST   = 8,
 };
 
 }  // namespace common

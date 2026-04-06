@@ -81,8 +81,7 @@ enum class AdminMsgType : uint16_t {
   DS_STATUS    = 5,
   CM_STATUS    = 6,
   NODE_LIST    = 7,
-  NODE_SET     = 8,
-  SHARD_LIST   = 9,
+  SHARD_LIST   = 8,
 };
 
 // Unix domain socket implementation
@@ -734,150 +733,75 @@ static void CallbackShard(const std::string &operation,
   done_latch.wait();
 }
 
-static void CallbackNodeByUds(AdminChannel &channel,
-                              const std::string &operation,
-                              const std::string &name,
-                              const std::string &value,
-                              bool verbose) {
+static void CallbackNodeByUds(AdminChannel &channel, bool verbose) {
   std::latch done_latch(1);
 
-  if (operation == "list") {
-    ListNodesRequestPB req;
-    auto *resp = new ListNodesResponsePB();
-    if (!channel.Call(
-            req, resp,
-            [&](const google::protobuf::Message *rsp,
-                const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
-              const auto *response = dynamic_cast<const ListNodesResponsePB *>(rsp);
-              if (ctx && ctx->Failed()) {
-                std::cerr << "Error: UDS call failed, err: " << ctx->ErrorText() << "\n";
-              } else if (response && response->ret_code() == CommonErr::OK) {
-                tabulate::Table tbl;
-                tbl.format().locale("C");
+  ListNodesRequestPB req;
+  auto *resp = new ListNodesResponsePB();
+  if (!channel.Call(
+          req, resp,
+          [&](const google::protobuf::Message *rsp,
+              const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+            const auto *response = dynamic_cast<const ListNodesResponsePB *>(rsp);
+            if (ctx && ctx->Failed()) {
+              std::cerr << "Error: UDS call failed, err: " << ctx->ErrorText() << "\n";
+            } else if (response && response->ret_code() == CommonErr::OK) {
+              tabulate::Table tbl;
+              tbl.format().locale("C");
 
-                if (verbose) {
-                  tbl.add_row({"Node Address", "Status", "Total Memory (MB)",
-                               "Free Memory (MB)", "Used Memory (MB)"})
-                      .format()
-                      .width(20);
-                  for (int i = 0; i < response->nodes_size(); ++i) {
-                    const auto &node_info = response->nodes(i);
-                    const auto &node_addr = node_info.node_address();
-                    std::string addr_str =
-                        node_addr.ip() + ":" + std::to_string(node_addr.port());
-                    std::string_view status_str =
-                        simm::common::NodeStatusToString(
-                            static_cast<simm::common::NodeStatus>(node_info.node_status()));
-                    std::string total_mem =
-                        std::to_string(node_info.resource().mem_total_bytes() / (1024 * 1024));
-                    std::string free_mem =
-                        std::to_string(node_info.resource().mem_free_bytes() / (1024 * 1024));
-                    std::string used_mem =
-                        std::to_string(node_info.resource().mem_used_bytes() / (1024 * 1024));
-                    tbl.add_row({addr_str, status_str, total_mem, free_mem, used_mem});
-                  }
-                  tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
-                  tbl.column(1).format().width(12);
-                  tbl.column(2).format().width(18);
-                  tbl.column(3).format().width(18);
-                  tbl.column(4).format().width(18);
-                  tbl.row(0).format().font_style({tabulate::FontStyle::bold});
-                } else {
-                  tbl.add_row({"Node Address", "Status"}).format().width(20);
-                  for (int i = 0; i < response->nodes_size(); ++i) {
-                    const auto &node_info = response->nodes(i);
-                    const auto &node_addr = node_info.node_address();
-                    std::string addr_str =
-                        node_addr.ip() + ":" + std::to_string(node_addr.port());
-                    std::string status_str =
-                        (node_info.node_status() == 1) ? "RUNNING" : "DEAD";
-                    tbl.add_row({addr_str, status_str});
-                  }
-                  tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
-                  tbl.column(1).format().width(12);
-                  tbl.row(0).format().font_style({tabulate::FontStyle::bold});
+              if (verbose) {
+                tbl.add_row({"Node Address", "Status", "Total Memory (MB)",
+                             "Free Memory (MB)", "Used Memory (MB)"})
+                    .format()
+                    .width(20);
+                for (int i = 0; i < response->nodes_size(); ++i) {
+                  const auto &node_info = response->nodes(i);
+                  const auto &node_addr = node_info.node_address();
+                  std::string addr_str =
+                      node_addr.ip() + ":" + std::to_string(node_addr.port());
+                  std::string_view status_str =
+                      simm::common::NodeStatusToString(
+                          static_cast<simm::common::NodeStatus>(node_info.node_status()));
+                  std::string total_mem =
+                      std::to_string(node_info.resource().mem_total_bytes() / (1024 * 1024));
+                  std::string free_mem =
+                      std::to_string(node_info.resource().mem_free_bytes() / (1024 * 1024));
+                  std::string used_mem =
+                      std::to_string(node_info.resource().mem_used_bytes() / (1024 * 1024));
+                  tbl.add_row({addr_str, status_str, total_mem, free_mem, used_mem});
                 }
-                std::cout << tbl << std::endl;
-              } else {
-                std::cerr << "Error: ListNodes failed with ret_code: "
-                          << (response ? response->ret_code() : -1) << "\n";
-              }
-              done_latch.count_down();
-              delete resp;
-            })) {
-      std::cerr << "node list: channel.Call() failed\n";
-      delete resp;
-      return;
-    }
-  } else if (operation == "set") {
-    size_t colon_pos = name.find(':');
-    if (colon_pos == std::string::npos) {
-      std::cerr << "Invalid node address format. Expected IP:PORT but got: " << name << "\n";
-      exit(1);
-    }
-    std::string node_ip = name.substr(0, colon_pos);
-    std::string node_port_str = name.substr(colon_pos + 1);
-
-    int status_value = -1;
-    for (size_t i = 0; i < simm::common::kNodeStatusStrVec.size(); ++i) {
-      if (simm::common::kNodeStatusStrVec[i] == value) {
-        status_value = i;
-        break;
-      }
-    }
-    if (status_value == -1) {
-      try {
-        status_value = std::stoi(value);
-        if (status_value < 0 ||
-            status_value >= static_cast<int>(simm::common::kNodeStatusStrVec.size())) {
-          std::cerr << "Error: Invalid node status value: " << value << "\n";
-          exit(1);
-        }
-      } catch (const std::exception &) {
-        std::cerr << "Error: Failed to parse status value: " << value << "\n";
-        exit(1);
-      }
-    }
-
-    SetNodeStatusRequestPB req;
-    auto *node_addr = req.mutable_node();
-    node_addr->set_ip(node_ip);
-    node_addr->set_port(std::stoi(node_port_str));
-    req.set_node_status(status_value);
-
-    auto *resp = new SetNodeStatusResponsePB();
-    if (!channel.Call(
-            req, resp,
-            [&](const google::protobuf::Message *rsp,
-                const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
-              const auto *response = dynamic_cast<const SetNodeStatusResponsePB *>(rsp);
-              if (ctx && ctx->Failed()) {
-                std::cerr << "Error: UDS call failed, err: " << ctx->ErrorText() << "\n";
-              } else if (response && response->ret_code() == CommonErr::OK) {
-                tabulate::Table tbl;
-                tbl.format().locale("C");
-                std::string_view status_str =
-                    simm::common::NodeStatusToString(
-                        static_cast<simm::common::NodeStatus>(status_value));
-                tbl.add_row({"Node Address", name});
-                tbl.add_row({"Status", status_str});
                 tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
-                tbl.column(1).format().width(30);
-                std::cout << tbl << std::endl;
+                tbl.column(1).format().width(12);
+                tbl.column(2).format().width(18);
+                tbl.column(3).format().width(18);
+                tbl.column(4).format().width(18);
+                tbl.row(0).format().font_style({tabulate::FontStyle::bold});
               } else {
-                std::cerr << "Error: SetNodeStatus failed with ret_code: "
-                          << (response ? response->ret_code() : -1) << "\n";
+                tbl.add_row({"Node Address", "Status"}).format().width(20);
+                for (int i = 0; i < response->nodes_size(); ++i) {
+                  const auto &node_info = response->nodes(i);
+                  const auto &node_addr = node_info.node_address();
+                  std::string addr_str =
+                      node_addr.ip() + ":" + std::to_string(node_addr.port());
+                  std::string status_str =
+                      (node_info.node_status() == 1) ? "RUNNING" : "DEAD";
+                  tbl.add_row({addr_str, status_str});
+                }
+                tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
+                tbl.column(1).format().width(12);
+                tbl.row(0).format().font_style({tabulate::FontStyle::bold});
               }
-              done_latch.count_down();
-              delete resp;
-            })) {
-      std::cerr << "node set: channel.Call() failed\n";
-      delete resp;
-      return;
-    }
-  } else {
-    std::cerr << "Unsupported operation for node: " << operation << "\n";
-    exit(1);
+              std::cout << tbl << std::endl;
+            } else {
+              std::cerr << "Error: ListNodes failed with ret_code: "
+                        << (response ? response->ret_code() : -1) << "\n";
+            }
+            done_latch.count_down();
+            delete resp;
+          })) {
+    std::cerr << "node list: channel.Call() failed\n";
+    delete resp;
+    return;
   }
 
   done_latch.wait();
@@ -1216,25 +1140,17 @@ int main(int argc, char *argv[]) {
       }
       operation = args[0];
       if (pid != -1) {
-        // UDS mode
-        std::string socket_path = buildUdsSocketPath("admin_cm");
-        AdminMsgType msg_type = (operation == "list") ? AdminMsgType::NODE_LIST
-                                                      : AdminMsgType::NODE_SET;
-        auto uds_channel = std::make_unique<UdsChannel>(socket_path, msg_type);
-        if (!uds_channel->Init()) {
-          std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
-          return 1;
-        }
+        // UDS mode (node list only)
         if (operation == "list") {
-          CallbackNodeByUds(*uds_channel, "list", "", "", verbose);
-        } else if (operation == "set") {
-          if (args.size() < 3) {
-            std::cerr << "Error: node set requires arguments: <IP:PORT> <STATUS>\n";
+          std::string socket_path = buildUdsSocketPath("admin_cm");
+          auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::NODE_LIST);
+          if (!uds_channel->Init()) {
+            std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
             return 1;
           }
-          CallbackNodeByUds(*uds_channel, "set", args[1], args[2], verbose);
+          CallbackNodeByUds(*uds_channel, verbose);
         } else {
-          std::cerr << "Error: Unknown node operation: " << operation << "\n";
+          std::cerr << "Error: Unknown node operation for UDS mode: " << operation << "\n";
           return 1;
         }
       } else {

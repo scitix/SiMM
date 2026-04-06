@@ -293,44 +293,6 @@ error_code_t ClusterManagerService::RegisterAdminHandlers(
       });
 
   admin_server->registerHandler(
-      simm::common::AdminMsgType::NODE_SET,
-      [this](const std::string& payload) -> std::string {
-        SetNodeStatusResponsePB resp;
-
-        if (!simm::common::ModuleServiceState::GetInstance().IsServiceReady()) {
-          resp.set_ret_code(CommonErr::TargetUnavailable);
-          std::string buf;
-          resp.SerializeToString(&buf);
-          return buf;
-        }
-
-        SetNodeStatusRequestPB req;
-        if (!req.ParseFromString(payload)) {
-          resp.set_ret_code(CommonErr::InvalidArgument);
-          std::string buf;
-          resp.SerializeToString(&buf);
-          return buf;
-        }
-
-        std::string addrStr =
-            req.node().ip() + ":" + std::to_string(req.node().port());
-        if (!node_manager_->QueryNodeExists(addrStr)) {
-          resp.set_ret_code(CommonErr::TargetNotFound);
-          std::string buf;
-          resp.SerializeToString(&buf);
-          return buf;
-        }
-
-        error_code_t ret = node_manager_->UpdateNodeStatus(
-            addrStr,
-            static_cast<simm::common::NodeStatus>(req.node_status()));
-        resp.set_ret_code(ret);
-        std::string buf;
-        resp.SerializeToString(&buf);
-        return buf;
-      });
-
-  admin_server->registerHandler(
       simm::common::AdminMsgType::SHARD_LIST,
       [this](const std::string& /* payload */) -> std::string {
         QueryShardRoutingTableAllResponsePB resp;

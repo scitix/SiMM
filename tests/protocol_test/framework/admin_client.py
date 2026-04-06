@@ -133,17 +133,6 @@ class AdminClient:
                 nodes.append(NodeInfo(address=row[0], status=row[1]))
         return nodes
 
-    def set_node_status(self, cm_pid: int,
-                        node_addr: str, status: str) -> bool:
-        """Set node status via simm_ctl_admin --pid <CM_PID> node set."""
-        try:
-            self._run_ctl_uds(cm_pid,
-                              ["node", "set", node_addr, status])
-            return True
-        except AdminClientError as e:
-            logger.error("set_node_status failed: %s", e)
-            return False
-
     # --- Shard operations (via CM admin UDS) ---
 
     def list_shards(self, cm_pid: int) -> dict[str, int]:

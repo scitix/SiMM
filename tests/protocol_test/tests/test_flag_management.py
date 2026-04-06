@@ -60,18 +60,3 @@ class TestFlagManagement:
         )
         assert val == "3", f"Expected '3', got '{val}'"
 
-    def test_manual_set_node_status(self, cluster_small):
-        """Use admin UDS to manually mark a node DEAD."""
-        ds0 = cluster_small.get_ds_handle(0)
-        admin = cluster_small.observer.admin_client
-        cm = cluster_small.cm
-
-        success = admin.set_node_status(
-            cm.pid,
-            ds0.addr_str, "DEAD"
-        )
-        assert success, "Failed to set node status"
-
-        assert cluster_small.observer.wait_for_node_status(
-            ds0.addr_str, "DEAD", timeout=10
-        ), "Node was not marked DEAD"
