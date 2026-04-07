@@ -51,6 +51,7 @@ class KVRpcService {
   error_code_t Init();
   error_code_t Start();
   error_code_t Stop();
+  void SetClusterDisconnectHandler(std::function<void()> handler);
 
   sicl::rpc::SiRPC *GetIOService() { return io_service_.get(); }
   sicl::rpc::SiRPC *GetMgtService() { return mgt_service_.get(); }
@@ -113,12 +114,7 @@ class KVRpcService {
   std::condition_variable heartbeat_condv_;
   std::atomic<uint32_t> heartbeat_failure_count_{0};
   std::unique_ptr<std::thread> keepalive_thread_{nullptr};
-  std::function<void()> cluster_disconnect_handler_{[]() {
-    // raise SIGTERM to trigger handler to do data_server clean destruction
-    if (std::raise(SIGTERM) != 0) {
-      std::_Exit(EXIT_FAILURE);
-    }
-  }};
+  std::function<void()> cluster_disconnect_handler_{};
 
   std::string local_ip_;
   std::deque<std::atomic<size_t>> shard_used_bytes_;
@@ -129,7 +125,8 @@ class KVRpcService {
   FRIEND_TEST(KVServiceLightTest, TestHeartbeatFailureCountResetOnSuccess);
   FRIEND_TEST(KVServiceLightTest, TestClusterManagerDisconnectHandlerInvokedOnToleranceReached);
   FRIEND_TEST(KVServiceLightTest, TestHeartbeatFailureToleranceTriggersReconnectWhenExitDisabled);
-  FRIEND_TEST(KVServiceLightTest, TestClusterManagerDisconnectSignalPathRaisesSigterm);
+  FRIEND_TEST(KVServiceLightTest, TestHandleClusterManagerDisconnectWithoutHandlerIsNoOp);
+  FRIEND_TEST(KVServiceLightTest, TestSetClusterDisconnectHandlerOverridesDefaultNoOp);
   FRIEND_TEST(KVServiceLightTest, TestShmAllocatorDestructorReleasesSharedMemory);
 #endif
 };

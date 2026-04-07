@@ -33,14 +33,6 @@ namespace ds {
 
 namespace {
 
-std::atomic<bool> g_sigterm_received{false};
-
-void TestSigTermHandler(int signal) {
-  if (signal == SIGTERM) {
-    g_sigterm_received.store(true);
-  }
-}
-
 std::string MakeShmPath(const std::string &shm_name) {
   std::ostringstream oss;
   oss << "/dev/shm/" << shm_name;
@@ -266,7 +258,7 @@ TEST_F(KVServiceLightTest, TestClusterManagerDisconnectHandlerInvokedOnTolerance
   FLAGS_ds_process_exit_cm_disconnection = true;
 
   bool disconnect_handler_invoked = false;
-  rpcServicePtr->cluster_disconnect_handler_ = [&]() { disconnect_handler_invoked = true; };
+  rpcServicePtr->SetClusterDisconnectHandler([&]() { disconnect_handler_invoked = true; });
   rpcServicePtr->heartbeat_failure_count_.store(FLAGS_cm_hb_tolerance_count - 1);
 
   rpcServicePtr->OnHeartbeatResult(true, CommonErr::InvalidArgument);
@@ -281,7 +273,7 @@ TEST_F(KVServiceLightTest, TestHeartbeatFailureToleranceTriggersReconnectWhenExi
   FLAGS_ds_process_exit_cm_disconnection = false;
 
   bool disconnect_handler_invoked = false;
-  rpcServicePtr->cluster_disconnect_handler_ = [&]() { disconnect_handler_invoked = true; };
+  rpcServicePtr->SetClusterDisconnectHandler([&]() { disconnect_handler_invoked = true; });
   rpcServicePtr->heartbeat_failure_count_.store(FLAGS_cm_hb_tolerance_count - 1);
   rpcServicePtr->cm_ready_.store(true);
 
@@ -292,13 +284,20 @@ TEST_F(KVServiceLightTest, TestHeartbeatFailureToleranceTriggersReconnectWhenExi
   EXPECT_EQ(rpcServicePtr->heartbeat_failure_count_.load(), 0);
 }
 
-TEST_F(KVServiceLightTest, TestClusterManagerDisconnectSignalPathRaisesSigterm) {
-  g_sigterm_received.store(false);
-  auto prev_handler = std::signal(SIGTERM, TestSigTermHandler);
-  auto restore_handler = folly::makeGuard([&]() { std::signal(SIGTERM, prev_handler); });
+TEST_F(KVServiceLightTest, TestHandleClusterManagerDisconnectWithoutHandlerIsNoOp) {
+  rpcServicePtr->cluster_disconnect_handler_ = nullptr;
 
-  rpcServicePtr->cluster_disconnect_handler_();
-  EXPECT_TRUE(g_sigterm_received.load());
+  rpcServicePtr->HandleClusterManagerDisconnect();
+  SUCCEED();
+}
+
+TEST_F(KVServiceLightTest, TestSetClusterDisconnectHandlerOverridesDefaultNoOp) {
+  bool invoked = false;
+  rpcServicePtr->SetClusterDisconnectHandler([&]() { invoked = true; });
+
+  rpcServicePtr->HandleClusterManagerDisconnect();
+
+  EXPECT_TRUE(invoked);
 }
 
 TEST_F(KVServiceLightTest, TestShmAllocatorDestructorReleasesSharedMemory) {
@@ -314,6 +313,7 @@ TEST_F(KVServiceLightTest, TestShmAllocatorDestructorReleasesSharedMemory) {
 
   EXPECT_NE(access(shm_path.c_str(), F_OK), 0) << "shared memory should be unlinked after allocator destruction";
 }
+
 }  // namespace ds
 }  // namespace simm
 

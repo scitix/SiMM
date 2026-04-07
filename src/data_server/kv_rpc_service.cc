@@ -72,6 +72,12 @@ KVRpcService::~KVRpcService() {
   all_tables_.clear();
 }
 
+void KVRpcService::SetClusterDisconnectHandler(std::function<void()> handler) {
+  if (handler) {
+    cluster_disconnect_handler_ = std::move(handler);
+  }
+}
+
 error_code_t KVRpcService::Init() {
   if (!initialized_) {
     sicl::rpc::SiRPC *io_service = nullptr;
@@ -164,8 +170,13 @@ error_code_t KVRpcService::Stop() {
     return CommonErr::OK;  // Already stopped
   }
   is_registered_ = true;
+  cm_ready_ = true;
   register_condv_.post();
   is_running_ = false;
+  {
+    std::unique_lock<std::mutex> heartbeat_lock(heartbeat_mutex_);
+    heartbeat_condv_.notify_all();
+  }
   StopRPCServices();
   return CommonErr::OK;
 }
@@ -298,13 +309,13 @@ void KVRpcService::SetCMAddressFromK8S() {
 }
 
 void KVRpcService::KeepAlive() {
-  while (true) {
-    while (!is_registered_) {
+  while (is_running_) {
+    while (is_running_ && !is_registered_) {
       RegisterOnCluster();
       register_condv_.try_wait_for(std::chrono::seconds(FLAGS_register_cooldown_sec));
       register_condv_.reset();  // folly::Bation should be reset before reuse
     }
-    while (!cm_ready_) {
+    while (is_running_ && !cm_ready_) {
       register_condv_.reset();
 
       sicl::rpc::SiRPC *mgt_client = nullptr;
@@ -315,12 +326,16 @@ void KVRpcService::KeepAlive() {
       RegisterToRestartedManager();
       register_condv_.try_wait_for(std::chrono::seconds(FLAGS_cm_connect_retry_interval_sec));
     }
+    if (!is_running_) {
+      break;
+    }
     {
       std::unique_lock<std::mutex> heartbeat_lock(heartbeat_mutex_);
       heartbeat_condv_.wait_for(
           heartbeat_lock, std::chrono::seconds(FLAGS_heartbeat_cooldown_sec), [this] { return !is_running_; });
-      if (!is_running_)
+      if (!is_running_) {
         break;
+      }
     }
     // do heartbeat with cluster manager
     HeartBeatToCluster();
@@ -347,11 +362,14 @@ void KVRpcService::RegisterOnCluster() {
         is_registered_ = true;
         register_condv_.post();
       } else {
-        MLOG_ERROR("RegisterOnCluster return not OK");
+        MLOG_ERROR("RegisterOnCluster to CM returns not OK, ret_code:{}", response->ret_code());
       }
     } else {
-      MLOG_ERROR(
-          "Failed to RegisterOnCluster to Cluster Manager {}:{}", FLAGS_cm_primary_node_ip, FLAGS_cm_rpc_inter_port);
+      MLOG_ERROR("RegisterOnCluster RPC to CM {}:{} failed: {} ({})",
+                 FLAGS_cm_primary_node_ip,
+                 FLAGS_cm_rpc_inter_port,
+                 ctx->ErrorText(),
+                 ctx->ErrorCode());
     }
   };
 
@@ -391,10 +409,10 @@ void KVRpcService::RegisterToRestartedManager() {
         cm_ready_ = true;
         register_condv_.post();
       } else {
-        MLOG_ERROR("RegisterToRestartedManager return not OK: {}", ret_code);
+        MLOG_ERROR("RegisterToRestartedManager to CM returns not OK, ret_code:{}", response->ret_code());
       }
     } else {
-      MLOG_ERROR("Failed to RegisterToRestartedManager to Cluster Manager {}:{}: {} ({})",
+      MLOG_ERROR("RegisterToRestartedManager RPC to CM {}:{} failed: {} ({})",
                  FLAGS_cm_primary_node_ip,
                  FLAGS_cm_rpc_inter_port,
                  ctx->ErrorText(),
@@ -429,9 +447,14 @@ void KVRpcService::HeartBeatToCluster() {
       auto response = dynamic_cast<const DataServerHeartBeatResponsePB *>(rsp);
       OnHeartbeatResult(false, response->ret_code());
       if (response->ret_code() != CommonErr::OK) {
-        MLOG_ERROR("HeartBeatToCluster return not OK");
+        MLOG_ERROR("HeartBeatToCluster to CM {}:{} returns not OK, ret_code:{}", response->ret_code());
       }
     } else {
+      MLOG_ERROR("HeartBeatToCluster RPC to CM {}:{} failed: {} ({})",
+                 FLAGS_cm_primary_node_ip,
+                 FLAGS_cm_rpc_inter_port,
+                 ctx->ErrorText(),
+                 ctx->ErrorCode());
       OnHeartbeatResult(true, CommonErr::InvalidState);
     }
   };
@@ -453,14 +476,16 @@ void KVRpcService::OnHeartbeatResult(bool rpc_failed, error_code_t ret_code) {
   }
 
   if (!rpc_failed) {
+    // RPC request succeed, but CM returns error code, do nothing
     return;
   }
 
   const auto failure_count = heartbeat_failure_count_.fetch_add(1) + 1;
-  MLOG_ERROR("Failed to HeartbeatToCluster to Cluster Manager {}:{} (counter={})",
+  MLOG_ERROR("Failed to HeartbeatToCluster to Cluster Manager {}:{} (counter={}), ret_code:{}",
              FLAGS_cm_primary_node_ip,
              FLAGS_cm_rpc_inter_port,
-             failure_count);
+             failure_count,
+             ret_code);
   if (failure_count >= FLAGS_cm_hb_tolerance_count) {
     heartbeat_failure_count_.store(0);
     if (FLAGS_ds_process_exit_cm_disconnection) {
@@ -475,6 +500,10 @@ void KVRpcService::OnHeartbeatResult(bool rpc_failed, error_code_t ret_code) {
 }
 
 void KVRpcService::HandleClusterManagerDisconnect() {
+  if (!cluster_disconnect_handler_) {
+    MLOG_ERROR("Cluster disconnect handler is not set, skip forced shutdown path");
+    return;
+  }
   cluster_disconnect_handler_();
 }
 
