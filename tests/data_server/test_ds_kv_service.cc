@@ -240,6 +240,120 @@ TEST_F(KVServiceTest, TestClientHandlers) {
   clientPool->join();
 }
 
+TEST_F(KVServiceTest, TestGetRejectsTooSmallClientBuffer) {
+  auto serverPool = std::make_unique<folly::IOThreadPoolExecutor>(1);
+  auto clientPool = std::make_unique<folly::IOThreadPoolExecutor>(1);
+  folly::Baton<> serverReady, serverExit;
+
+  folly::via(serverPool->getEventBase(), [&] {
+    auto ret = rpcServicePtr->Start();
+    EXPECT_EQ(ret, CommonErr::OK);
+    serverReady.post();
+    serverExit.wait();
+  });
+
+  serverReady.wait();
+
+  folly::Baton<> clientDone;
+  folly::via(clientPool->getEventBase(), [&] {
+    sicl::rpc::SiRPC *sirpc = nullptr;
+    sicl::rpc::SiRPC::newInstance(sirpc, false);
+    sicl::rpc::RpcContext *ctx_raw = nullptr;
+    sicl::rpc::RpcContext::newInstance(ctx_raw);
+    auto ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_raw);
+    ctx->set_timeout(sicl::transport::TimerTick::TIMER_1S);
+
+    auto conn = sirpc->connect("127.0.0.1", FLAGS_io_service_port);
+    ASSERT_TRUE(conn != nullptr);
+
+    const std::string key = "test_get_too_small_buffer";
+    const uint32_t shard_id =
+        hashkit::HashkitBase::Instance().generate_16bit_hash_value(key.c_str(), key.length()) % FLAGS_shard_total_num;
+    constexpr size_t kValueLen = 4096;
+    constexpr size_t kSmallBufLen = 512;
+
+    auto *mempool = sirpc->GetMempool();
+    sicl::transport::MemDesc *put_descr = nullptr;
+    ASSERT_EQ(mempool->alloc(put_descr, kValueLen), sicl::transport::Result::SICL_SUCCESS);
+    std::string value;
+    get_random_string(kValueLen, &value);
+    memcpy(put_descr->getAddr(), value.data(), value.size());
+
+    auto put_req = std::make_shared<KVPutRequestPB>();
+    auto put_rsp = std::make_shared<KVPutResponsePB>();
+    put_req->set_shard_id(shard_id);
+    put_req->set_key(key);
+    put_req->set_val_len(kValueLen);
+    put_req->set_buf_addr(reinterpret_cast<uint64_t>(put_descr->getAddr()));
+    put_req->set_buf_ofs(0);
+    put_req->set_buf_len(kValueLen);
+    for (auto rkey : put_descr->getRemoteKeys()) {
+      put_req->add_buf_rkey(rkey);
+    }
+
+    std::atomic<bool> put_done{false};
+    sirpc->SendRequest(
+        conn,
+        static_cast<sicl::rpc::ReqType>(KVServerRpcType::RPC_CLIENT_KV_PUT),
+        *put_req,
+        put_rsp.get(),
+        ctx,
+        [&put_done](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+          ASSERT_FALSE(ctx->Failed());
+          auto *put_rsp = dynamic_cast<const KVPutResponsePB *>(rsp);
+          ASSERT_NE(put_rsp, nullptr);
+          EXPECT_EQ(put_rsp->ret_code(), CommonErr::OK);
+          put_done.store(true);
+        });
+    while (!put_done.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    sicl::transport::MemDesc *get_descr = nullptr;
+    ASSERT_EQ(mempool->alloc(get_descr, kSmallBufLen), sicl::transport::Result::SICL_SUCCESS);
+    memset(get_descr->getAddr(), 0, kSmallBufLen);
+
+    auto get_req = std::make_shared<KVGetRequestPB>();
+    auto get_rsp = std::make_shared<KVGetResponsePB>();
+    get_req->set_shard_id(shard_id);
+    get_req->set_key(key);
+    get_req->set_buf_addr(reinterpret_cast<uint64_t>(get_descr->getAddr()));
+    get_req->set_buf_ofs(0);
+    get_req->set_buf_len(kSmallBufLen);
+    for (auto rkey : get_descr->getRemoteKeys()) {
+      get_req->add_buf_rkey(rkey);
+    }
+
+    std::atomic<bool> get_done{false};
+    sirpc->SendRequest(
+        conn,
+        static_cast<sicl::rpc::ReqType>(KVServerRpcType::RPC_CLIENT_KV_GET),
+        *get_req,
+        get_rsp.get(),
+        ctx,
+        [&get_done](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+          ASSERT_FALSE(ctx->Failed());
+          auto *get_rsp = dynamic_cast<const KVGetResponsePB *>(rsp);
+          ASSERT_NE(get_rsp, nullptr);
+          EXPECT_EQ(get_rsp->ret_code(), CommonErr::InvalidArgument);
+          get_done.store(true);
+        });
+    while (!get_done.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    mempool->release(put_descr);
+    mempool->release(get_descr);
+    delete sirpc;
+    clientDone.post();
+  });
+
+  clientDone.wait();
+  serverExit.post();
+  serverPool->join();
+  clientPool->join();
+}
+
 TEST_F(KVServiceLightTest, TestHeartbeatFailureCountResetOnSuccess) {
   rpcServicePtr->heartbeat_failure_count_.store(4);
   rpcServicePtr->cm_ready_.store(true);
