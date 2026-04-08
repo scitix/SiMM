@@ -13,6 +13,9 @@
 
 DECLARE_bool(clnt_syncreq_enable_retry);
 DECLARE_uint32(clnt_syncreq_retry_count);
+DECLARE_bool(clnt_use_k8s);
+DECLARE_string(cm_primary_node_ip);
+DECLARE_int32(cm_rpc_inter_port);
 DECLARE_uint32(shard_total_num);
 
 namespace simm {
@@ -296,6 +299,8 @@ class ClientMessengerTestPeer {
   static bool IsInitialized() { return ClientMessenger::Instance().initialized_; }
 
   static std::string CmAddr() { return ClientMessenger::Instance().cm_addr_; }
+
+  static std::string GetCmAddress() { return ClientMessenger::Instance().get_cm_address(); }
 
   static sicl::rpc::SiRPC *SwapRpcClient(sicl::rpc::SiRPC *replacement) {
     auto &messenger = ClientMessenger::Instance();
@@ -596,6 +601,22 @@ TEST_F(ClientMessengerUnitTest, ReInitRemovesStaleConnectionFromLocalContextMap)
   EXPECT_FALSE(ClientMessengerTestPeer::HasDsContext("10.0.0.9:1999"));
   EXPECT_EQ(ClientMessengerTestPeer::ShardOwner(0), "10.0.0.1:1001");
   EXPECT_EQ(ClientMessengerTestPeer::ShardOwner(1), "10.0.0.1:1001");
+}
+
+TEST_F(ClientMessengerUnitTest, GetCmAddressUsesFlagToSkipK8SLookup) {
+  const auto old_use_k8s = FLAGS_clnt_use_k8s;
+  const auto old_cm_ip = FLAGS_cm_primary_node_ip;
+  const auto old_cm_port = FLAGS_cm_rpc_inter_port;
+
+  FLAGS_clnt_use_k8s = false;
+  FLAGS_cm_primary_node_ip = "10.8.0.1";
+  FLAGS_cm_rpc_inter_port = 30001;
+
+  EXPECT_EQ(ClientMessengerTestPeer::GetCmAddress(), "10.8.0.1:30001");
+
+  FLAGS_clnt_use_k8s = old_use_k8s;
+  FLAGS_cm_primary_node_ip = old_cm_ip;
+  FLAGS_cm_rpc_inter_port = old_cm_port;
 }
 
 }  // namespace clnt

@@ -30,35 +30,59 @@ void KVGetHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
   auto ret = service_->KVGet(simm_ctx, req, kv_entry);
   if (ret == CommonErr::OK) {
     auto [meta, data] = KVCachePool::GetBufferPair(&kv_entry->slab_info);
+    if (req->buf_len() < meta->value_len) {
+      MLOG_ERROR("KVGetHandler::Work client buffer too small for key {}, buf_len:{}, value_len:{}",
+                 req->key(),
+                 req->buf_len(),
+                 meta->value_len);
+      service_->KVGetCallback(kv_entry);
+      rsp->set_ret_code(CommonErr::InvalidArgument);
+      simm::common::Metrics::Instance("data_server")
+          .ObserveRequestDuration("Get",
+                                  static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                          std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs())
+                                                          .count()));
+      simm::common::Metrics::Instance("data_server").IncRequestsTotal("Get");
+      simm::common::Metrics::Instance("data_server").IncErrorsTotal("Get");
+      conn->SendResponse(*rsp, ctx, [rsp](std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+        if (ctx->Failed()) {
+          MLOG_ERROR("{} response failed: {}({})", rsp->GetTypeName(), ctx->ErrorText(), ctx->ErrorCode());
+        }
+      });
+      return;
+    }
     sicl::transport::RequestParam param{
         .mem_desc = static_cast<sicl::transport::MemDesc *>(kv_entry->slab_info.block_addr->descr)};
     std::vector<uint32_t> rkeys(req->buf_rkey().begin(), req->buf_rkey().end());
-    sicl::transport::WriteCallback done =
-        [this, kv_entry, rsp, conn, ctx, meta, simm_ctx](sicl::transport::Status status) mutable {
-          error_code_t ret = CommonErr::OK;
-          if (status.isOk()) {
-            // return actual value length to client
-            rsp->set_val_len(meta->value_len);
-            // record bytes written on successful write
-            simm::common::Metrics::Instance("data_server").IncWrittenTotal(static_cast<double>(meta->value_len));
-          } else {
-            MLOG_ERROR("KVGetHandler::Work connection write failed, err_code:{}, err_msg:{}",
-                       std::to_string(status.errCode()),
-                       status.errMsg());
-            ret = DsErr::DataRDMATransportFailed;
-            simm::common::Metrics::Instance("data_server").IncErrorsTotal("Get");
-          }
-          service_->KVGetCallback(kv_entry);
-          rsp->set_ret_code(ret);
-          simm::common::Metrics::Instance("data_server").ObserveRequestDuration("Get",
-              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs()).count()));
-          simm::common::Metrics::Instance("data_server").IncRequestsTotal("Get");
-          conn->SendResponse(*rsp, ctx, [rsp](std::shared_ptr<sicl::rpc::RpcContext> ctx) {
-            if (ctx->Failed()) {
-              MLOG_ERROR("{} response failed: {}({})", rsp->GetTypeName(), ctx->ErrorText(), ctx->ErrorCode());
-            }
-          });
-        };
+    sicl::transport::WriteCallback done = [this, kv_entry, rsp, conn, ctx, meta, simm_ctx](
+                                              sicl::transport::Status status) mutable {
+      error_code_t ret = CommonErr::OK;
+      if (status.isOk()) {
+        // return actual value length to client
+        rsp->set_val_len(meta->value_len);
+        // record bytes written on successful write
+        simm::common::Metrics::Instance("data_server").IncWrittenTotal(static_cast<double>(meta->value_len));
+      } else {
+        MLOG_ERROR("KVGetHandler::Work connection write failed, err_code:{}, err_msg:{}",
+                   std::to_string(status.errCode()),
+                   status.errMsg());
+        ret = DsErr::DataRDMATransportFailed;
+        simm::common::Metrics::Instance("data_server").IncErrorsTotal("Get");
+      }
+      service_->KVGetCallback(kv_entry);
+      rsp->set_ret_code(ret);
+      simm::common::Metrics::Instance("data_server")
+          .ObserveRequestDuration("Get",
+                                  static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                          std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs())
+                                                          .count()));
+      simm::common::Metrics::Instance("data_server").IncRequestsTotal("Get");
+      conn->SendResponse(*rsp, ctx, [rsp](std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+        if (ctx->Failed()) {
+          MLOG_ERROR("{} response failed: {}({})", rsp->GetTypeName(), ctx->ErrorText(), ctx->ErrorCode());
+        }
+      });
+    };
     auto res = conn->write(data, meta->value_len, req->buf_addr(), rkeys, done, param);
     if (res != sicl::transport::Result::SICL_SUCCESS) {
       done(sicl::transport::Status(res));  // synchronized return
@@ -66,8 +90,11 @@ void KVGetHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
     return;
   }
   rsp->set_ret_code(ret);
-  simm::common::Metrics::Instance("data_server").ObserveRequestDuration("Get",
-      static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs()).count()));
+  simm::common::Metrics::Instance("data_server")
+      .ObserveRequestDuration("Get",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs())
+                                                      .count()));
   simm::common::Metrics::Instance("data_server").IncRequestsTotal("Get");
   if (ret != CommonErr::OK) {
     simm::common::Metrics::Instance("data_server").IncErrorsTotal("Get");
@@ -112,32 +139,35 @@ void KVPutHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
     sicl::transport::RequestParam param{
         .mem_desc = static_cast<sicl::transport::MemDesc *>(kv_entry->slab_info.block_addr->descr)};
     std::vector<uint32_t> rkeys(req->buf_rkey().begin(), req->buf_rkey().end());
-    sicl::transport::ReadCallback done =
-        [this, shard_id, kv_entry, rsp, conn, ctx, simm_ctx, meta](sicl::transport::Status status) mutable {
-          error_code_t ret;
-          if (status.isOk()) {
-            service_->KVPutSuccessHooks(kv_entry);
-            ret = CommonErr::OK;
-            // record bytes read when Put succeeded
-            simm::common::Metrics::Instance("data_server").IncReadTotal(static_cast<double>(meta->value_len));
-          } else {
-            service_->KVPutFailedRewind(shard_id, kv_entry);
-            MLOG_ERROR("KVPutHandler::Work connection read failed: err_code:{}, err_msg:{}",
-                       std::to_string(status.errCode()),
-                       status.errMsg());
-            ret = DsErr::DataRDMATransportFailed;
-            simm::common::Metrics::Instance("data_server").IncErrorsTotal("Put");
-          }
-          rsp->set_ret_code(ret);
-          simm::common::Metrics::Instance("data_server").ObserveRequestDuration("Put",
-              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs()).count()));
-          simm::common::Metrics::Instance("data_server").IncRequestsTotal("Put");
-          conn->SendResponse(*rsp, ctx, [rsp](std::shared_ptr<sicl::rpc::RpcContext> ctx) {
-            if (ctx->Failed()) {
-              MLOG_ERROR("{} response failed: {}({})", rsp->GetTypeName(), ctx->ErrorText(), ctx->ErrorCode());
-            }
-          });
-        };
+    sicl::transport::ReadCallback done = [this, shard_id, kv_entry, rsp, conn, ctx, simm_ctx, meta](
+                                             sicl::transport::Status status) mutable {
+      error_code_t ret;
+      if (status.isOk()) {
+        service_->KVPutSuccessHooks(kv_entry);
+        ret = CommonErr::OK;
+        // record bytes read when Put succeeded
+        simm::common::Metrics::Instance("data_server").IncReadTotal(static_cast<double>(meta->value_len));
+      } else {
+        service_->KVPutFailedRewind(shard_id, kv_entry);
+        MLOG_ERROR("KVPutHandler::Work connection read failed: err_code:{}, err_msg:{}",
+                   std::to_string(status.errCode()),
+                   status.errMsg());
+        ret = DsErr::DataRDMATransportFailed;
+        simm::common::Metrics::Instance("data_server").IncErrorsTotal("Put");
+      }
+      rsp->set_ret_code(ret);
+      simm::common::Metrics::Instance("data_server")
+          .ObserveRequestDuration("Put",
+                                  static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                          std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs())
+                                                          .count()));
+      simm::common::Metrics::Instance("data_server").IncRequestsTotal("Put");
+      conn->SendResponse(*rsp, ctx, [rsp](std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+        if (ctx->Failed()) {
+          MLOG_ERROR("{} response failed: {}({})", rsp->GetTypeName(), ctx->ErrorText(), ctx->ErrorCode());
+        }
+      });
+    };
     auto res = conn->read(data, meta->value_len, req->buf_addr(), rkeys, done, param);
     if (res != sicl::transport::Result::SICL_SUCCESS) {
       done(sicl::transport::Status(res));  // synchronized return
@@ -145,8 +175,11 @@ void KVPutHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
     return;
   }
   rsp->set_ret_code(ret);
-  simm::common::Metrics::Instance("data_server").ObserveRequestDuration("Put",
-      static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs()).count()));
+  simm::common::Metrics::Instance("data_server")
+      .ObserveRequestDuration("Put",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs())
+                                                      .count()));
   simm::common::Metrics::Instance("data_server").IncRequestsTotal("Put");
   if (ret != CommonErr::OK) {
     simm::common::Metrics::Instance("data_server").IncErrorsTotal("Put");
@@ -167,8 +200,11 @@ void KVDelHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
   auto rsp = std::make_shared<KVDelResponsePB>();
   auto ret = service_->KVDel(simm_ctx, req);
   rsp->set_ret_code(ret);
-  simm::common::Metrics::Instance("data_server").ObserveRequestDuration("Delete",
-      static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs()).count()));
+  simm::common::Metrics::Instance("data_server")
+      .ObserveRequestDuration("Delete",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs())
+                                                      .count()));
   simm::common::Metrics::Instance("data_server").IncRequestsTotal("Delete");
   if (ret != CommonErr::OK) {
     simm::common::Metrics::Instance("data_server").IncErrorsTotal("Delete");
@@ -189,8 +225,11 @@ void KVLookupHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
   auto rsp = std::make_shared<KVLookupResponsePB>();
   auto ret = service_->KVLookup(simm_ctx, req);
   rsp->set_ret_code(ret);
-  simm::common::Metrics::Instance("data_server").ObserveRequestDuration("Lookup",
-      static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs()).count()));
+  simm::common::Metrics::Instance("data_server")
+      .ObserveRequestDuration("Lookup",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - simm_ctx->GetReqStartTs())
+                                                      .count()));
   simm::common::Metrics::Instance("data_server").IncRequestsTotal("Lookup");
   if (ret != CommonErr::OK) {
     simm::common::Metrics::Instance("data_server").IncErrorsTotal("Lookup");

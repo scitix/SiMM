@@ -41,6 +41,7 @@ DECLARE_uint32(clnt_thread_pool_size);
 DECLARE_uint32(clnt_cm_addr_check_interval_inSecs);
 DECLARE_uint32(clnt_syncreq_retry_count);
 DECLARE_bool(clnt_syncreq_enable_retry);
+DECLARE_bool(clnt_use_k8s);
 DECLARE_bool(simm_enable_trace);
 
 DECLARE_LOG_MODULE("simm_client");
@@ -177,6 +178,9 @@ std::string ClientMessenger::get_cm_address() {
   }
 #endif
   const std::string default_cm_addr = FLAGS_cm_primary_node_ip + ":" + std::to_string(FLAGS_cm_rpc_inter_port);
+  if (!FLAGS_clnt_use_k8s) {
+    return default_cm_addr;
+  }
   // get cluster manager pod info from K8S api, get vector of [pod_name, pod_ip]
   // TODO: change to get cluster manager info from etcd
   auto [ret, cm_ips] =
