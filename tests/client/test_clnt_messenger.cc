@@ -17,6 +17,8 @@ DECLARE_bool(clnt_use_k8s);
 DECLARE_string(cm_primary_node_ip);
 DECLARE_int32(cm_rpc_inter_port);
 DECLARE_uint32(shard_total_num);
+DECLARE_uint32(clnt_deferred_reshard_wait_inSecs);
+DECLARE_uint32(clnt_cm_addr_check_interval_inSecs);
 
 namespace simm {
 namespace clnt {
@@ -214,6 +216,9 @@ class ClientMessengerTestPeer {
     messenger.test_get_cm_address_hook_ = nullptr;
     messenger.test_route_query_hook_ = nullptr;
     messenger.test_build_connection_hook_ = nullptr;
+    // clear dead-since state between tests
+    std::lock_guard lg(messenger.ds_dead_since_mtx_);
+    messenger.ds_dead_since_.clear();
   }
 
   static void InstallDsContext(const std::string &addr,
@@ -331,6 +336,81 @@ class ClientMessengerTestPeer {
 
   static error_code_t BuildConnectionNoWait(const std::string &addr) {
     return ClientMessenger::Instance().build_connection(addr, ClientMessenger::BuildConnWaitMode::kNoWait);
+  }
+
+  // Inject a dead-since timestamp for a DS, simulating it having been seen as dead at a given
+  // time.  Used to control the deferred-reshard wait window in failover thread tests.
+  static void InjectDeadSince(const std::string &addr,
+                               std::chrono::steady_clock::time_point tp) {
+    auto &messenger = ClientMessenger::Instance();
+    std::lock_guard lg(messenger.ds_dead_since_mtx_);
+    messenger.ds_dead_since_[addr] = tp;
+  }
+
+  // Clear the dead-since record for a DS.
+  static void ClearDeadSince(const std::string &addr) {
+    auto &messenger = ClientMessenger::Instance();
+    std::lock_guard lg(messenger.ds_dead_since_mtx_);
+    messenger.ds_dead_since_.erase(addr);
+  }
+
+  // Check if a dead-since record exists for a DS.
+  static bool HasDeadSince(const std::string &addr) {
+    auto &messenger = ClientMessenger::Instance();
+    std::lock_guard lg(messenger.ds_dead_since_mtx_);
+    return messenger.ds_dead_since_.count(addr) > 0;
+  }
+
+  // Wake up the failover thread immediately (simulate a scan cycle without waiting for the
+  // clnt_cm_addr_check_interval_inSecs sleep).
+  static void WakeFailoverThread() {
+    auto &messenger = ClientMessenger::Instance();
+    messenger.failover_condv_.notify_all();
+  }
+
+  // Run one failover scan iteration synchronously (the DS-inactive branch only).
+  // cm_addr_ is set to match the CM hook so the CM-change branch is skipped.
+  // Returns true if ReInit() was triggered.
+  static bool RunOneFailoverCycle() {
+    auto &messenger = ClientMessenger::Instance();
+    messenger.cm_addr_ = "10.0.0.100:9000";
+
+    bool should_reinit = false;
+    for (auto [addr, ds_ctx] : messenger.ds_conn_ctxs_) {
+      if (!ds_ctx->active.load()) {
+        {
+          std::lock_guard lg(messenger.ds_dead_since_mtx_);
+          if (!messenger.ds_dead_since_.count(addr)) {
+            messenger.ds_dead_since_[addr] = std::chrono::steady_clock::now();
+          }
+        }
+
+        if (CommonErr::OK == messenger.build_connection(addr)) {
+          std::lock_guard lg(messenger.ds_dead_since_mtx_);
+          messenger.ds_dead_since_.erase(addr);
+          continue;
+        }
+
+        std::chrono::duration<double> dur;
+        {
+          std::lock_guard lg(messenger.ds_dead_since_mtx_);
+          dur = std::chrono::steady_clock::now() - messenger.ds_dead_since_[addr];
+        }
+
+        if (dur > std::chrono::seconds(FLAGS_clnt_deferred_reshard_wait_inSecs)) {
+          {
+            std::lock_guard lg(messenger.ds_dead_since_mtx_);
+            messenger.ds_dead_since_.erase(addr);
+          }
+          should_reinit = true;
+        }
+      }
+    }
+
+    if (should_reinit) {
+      messenger.ReInit();
+    }
+    return should_reinit;
   }
 };
 
@@ -617,6 +697,138 @@ TEST_F(ClientMessengerUnitTest, GetCmAddressUsesFlagToSkipK8SLookup) {
   FLAGS_clnt_use_k8s = old_use_k8s;
   FLAGS_cm_primary_node_ip = old_cm_ip;
   FLAGS_cm_rpc_inter_port = old_cm_port;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Deferred reshard window tests: verify the failover thread's DS-dead tracking
+// and ReInit-trigger logic for the "DS IP changed after restart" scenario.
+//
+// The failover thread logic has two key branches we test here:
+//   1. DS inactive + reconnect fails + window NOT expired → should_reinit = false
+//   2. DS inactive + reconnect fails + window expired    → should_reinit = true → ReInit()
+//   3. DS inactive + reconnect succeeds                  → dead-since cleared, no ReInit
+//
+// We test these by driving the failover decision logic directly (via RunOneFailoverCycle)
+// rather than relying on timing of the background thread.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Expose a test-only hook to run one failover scan cycle synchronously.
+// This mirrors the body of the failover thread loop, minus the sleep.
+// We add this to ClientMessengerTestPeer rather than production code.
+
+// Helper: manually execute one failover scan iteration (the DS-scan branch only,
+// CM-address-change check is skipped by keeping cm_addr_ matching the hook).
+static bool RunOneFailoverCycle(FakeSiRPC * /*unused*/) {
+  return ClientMessengerTestPeer::RunOneFailoverCycle();
+}
+
+// Test: DS goes inactive, reconnect fails, window NOT expired → ReInit not triggered.
+// After backdating dead-since past the window, next cycle triggers ReInit and picks
+// up the new IP from CM.
+TEST_F(ClientMessengerUnitTest, DeferredWindowExpiryTriggersReInitWithNewIP) {
+  const std::string old_addr = "10.0.0.1:1001";
+  const std::string new_addr = "10.0.0.99:1001";
+  const uint32_t window_secs = 2;
+
+  const auto saved_window = FLAGS_clnt_deferred_reshard_wait_inSecs;
+  FLAGS_clnt_deferred_reshard_wait_inSecs = window_secs;
+
+  auto *fake_rpc = InstallFakeRpcClient();
+
+  // DS starts active on old_addr, owns shard 0
+  ClientMessengerTestPeer::InstallDsContext(old_addr, true, 1, {0},
+                                            std::make_shared<FakeConnection>("old"));
+  // DS goes inactive (pod crash)
+  ClientMessengerTestPeer::MarkConnectionActive(old_addr, false, 2);
+
+  // CM hook must be set before RunOneFailoverCycle (ReInit calls get_cm_address via hook)
+  ClientMessengerTestPeer::SetGetCmAddressHook([]() { return std::string("10.0.0.100:9000"); });
+
+  // build_connection for old_addr always fails — old IP unreachable.
+  // build_connection for new_addr succeeds — DS restarted on new IP.
+  // Both go through test_build_connection_hook_ which takes priority over rpc_client_->connect.
+  fake_rpc->SetConnectHandler([]() -> std::shared_ptr<sicl::rpc::Connection> { return nullptr; });
+
+  std::atomic<int> reinit_count{0};
+  // CM now knows the new IP (DS has already re-registered with new IP)
+  ClientMessengerTestPeer::SetRouteQueryHook([&](const std::string &) {
+    reinit_count.fetch_add(1);
+    return std::make_pair(CommonErr::OK, BuildRoutingResponse({{new_addr, {0}}}));
+  });
+  // Use build_connection hook so both old and new addr go through the same path
+  ClientMessengerTestPeer::SetBuildConnectionHook([&](const std::string &addr) {
+    if (addr == new_addr) {
+      ClientMessengerTestPeer::MarkConnectionActive(addr, true, 10);
+      return CommonErr::OK;
+    }
+    // old_addr (and any other addr) — still unreachable
+    return ClntErr::BuildConnectionFailed;
+  });
+
+  // ── Cycle 1: dead-since just now → still within window ──
+  ClientMessengerTestPeer::InjectDeadSince(old_addr, std::chrono::steady_clock::now());
+  bool did_reinit = RunOneFailoverCycle(fake_rpc);
+
+  EXPECT_FALSE(did_reinit) << "ReInit must not fire within deferred window";
+  EXPECT_EQ(reinit_count.load(), 0) << "route_query hook must not be called within window";
+  EXPECT_EQ(ClientMessengerTestPeer::ShardOwner(0), old_addr)
+      << "Shard 0 must still point to old addr while within window";
+  EXPECT_TRUE(ClientMessengerTestPeer::HasDeadSince(old_addr))
+      << "dead-since entry must persist while in window";
+
+  // ── Cycle 2: backdate dead-since past window → ReInit fires ──
+  ClientMessengerTestPeer::InjectDeadSince(
+      old_addr,
+      std::chrono::steady_clock::now() - std::chrono::seconds(window_secs + 1));
+  did_reinit = RunOneFailoverCycle(fake_rpc);
+
+  EXPECT_TRUE(did_reinit) << "ReInit must fire after window expires";
+  EXPECT_EQ(reinit_count.load(), 1) << "route_query hook must be called exactly once";
+  EXPECT_FALSE(ClientMessengerTestPeer::HasDeadSince(old_addr))
+      << "dead-since entry must be cleared after ReInit";
+  EXPECT_EQ(ClientMessengerTestPeer::ShardOwner(0), new_addr)
+      << "Shard 0 must be rerouted to new DS IP after ReInit";
+
+  FLAGS_clnt_deferred_reshard_wait_inSecs = saved_window;
+}
+
+// Test: DS goes inactive but recovers on the SAME IP within the deferred window.
+// build_connection succeeds → dead-since cleared, ReInit never triggered.
+TEST_F(ClientMessengerUnitTest, DeferredWindowReconnectSameIPClearsDeadSince) {
+  const std::string addr = "10.0.0.1:1001";
+  const uint32_t window_secs = 10;
+
+  const auto saved_window = FLAGS_clnt_deferred_reshard_wait_inSecs;
+  FLAGS_clnt_deferred_reshard_wait_inSecs = window_secs;
+
+  auto *fake_rpc = InstallFakeRpcClient();
+
+  ClientMessengerTestPeer::InstallDsContext(addr, false, 1, {0}, nullptr);
+
+  std::atomic<int> reinit_count{0};
+  ClientMessengerTestPeer::SetRouteQueryHook([&](const std::string &) {
+    reinit_count.fetch_add(1);
+    return std::make_pair(CommonErr::OK, BuildRoutingResponse({{addr, {0}}}));
+  });
+
+  // DS recovered on same IP — reconnect succeeds
+  fake_rpc->SetConnectHandler([&]() {
+    return std::make_shared<FakeConnection>("recovered");
+  });
+
+  // Inject a fresh dead-since (well within the window)
+  ClientMessengerTestPeer::InjectDeadSince(addr, std::chrono::steady_clock::now());
+
+  bool did_reinit = RunOneFailoverCycle(fake_rpc);
+
+  EXPECT_FALSE(did_reinit) << "ReInit must not fire when DS recovers on same IP";
+  EXPECT_EQ(reinit_count.load(), 0) << "route_query hook must not be called on same-IP recovery";
+  EXPECT_FALSE(ClientMessengerTestPeer::HasDeadSince(addr))
+      << "dead-since must be cleared after successful reconnect";
+  EXPECT_TRUE(ClientMessengerTestPeer::IsDsActive(addr))
+      << "DS must be active after successful reconnect";
+
+  FLAGS_clnt_deferred_reshard_wait_inSecs = saved_window;
 }
 
 }  // namespace clnt

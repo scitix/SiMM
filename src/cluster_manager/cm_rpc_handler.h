@@ -29,8 +29,10 @@ class NewNodeHandshakeHandler : public sicl::rpc::HandlerBase {
         sicl::rpc::SiRPC* service,
         google::protobuf::Message* request,
         std::shared_ptr<simm::cm::ClusterManagerNodeManager> node_manager,
-        std::shared_ptr<simm::cm::ClusterManagerShardManager> shard_manager):
-        HandlerBase(service, request), node_manager_(node_manager), shard_manager_(shard_manager) {}
+        std::shared_ptr<simm::cm::ClusterManagerShardManager> shard_manager,
+        std::shared_ptr<simm::cm::ClusterManagerHBMonitor> hb_monitor):
+        HandlerBase(service, request), node_manager_(node_manager),
+        shard_manager_(shard_manager), hb_monitor_(hb_monitor) {}
 
   virtual void Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
                     const std::shared_ptr<sicl::rpc::Connection> conn,
@@ -39,6 +41,7 @@ class NewNodeHandshakeHandler : public sicl::rpc::HandlerBase {
  private:
   std::shared_ptr<simm::cm::ClusterManagerNodeManager> node_manager_{nullptr};
   std::shared_ptr<simm::cm::ClusterManagerShardManager> shard_manager_{nullptr};
+  std::shared_ptr<simm::cm::ClusterManagerHBMonitor> hb_monitor_{nullptr};
 };
 
 class NodeHeartBeatHandler : public sicl::rpc::HandlerBase {

@@ -112,6 +112,7 @@ error_code_t KVRpcService::Init() {
     cache_pool_ = std::make_unique<KVCachePool>();
     cache_evictor_ = std::make_unique<KVCacheEvictor>(this);
     uint64_t system_level_free_memory = FLAGS_memory_limit_bytes;
+    uint64_t cache_bound_bytes = system_level_free_memory;
     if (system_level_free_memory == 0) {
       auto result = utils::GetMemoryFreeToUse();
       if (result < 0) {
@@ -120,7 +121,7 @@ error_code_t KVRpcService::Init() {
       }
       system_level_free_memory = static_cast<uint64_t>(result);
     }
-    auto cache_bound_bytes = system_level_free_memory * FLAGS_ds_free_memory_usable_ratio / 100;
+    cache_bound_bytes = cache_bound_bytes == 0 ? (system_level_free_memory * FLAGS_ds_free_memory_usable_ratio / 100) : cache_bound_bytes;
     int ret =
         cache_pool_->init(cache_bound_bytes, io_service->GetMempool(), cache_evictor_.get(), FLAGS_ds_initial_blocks);
     if (ret) {
@@ -134,6 +135,7 @@ error_code_t KVRpcService::Init() {
       shard_used_bytes_[i].store(0, std::memory_order_relaxed);
     }
     SetCMAddressFromK8S();
+    InitLogicalNodeId();
     initialized_ = true;
   }
   return CommonErr::OK;  // Success
@@ -308,6 +310,38 @@ void KVRpcService::SetCMAddressFromK8S() {
   gflags::SetCommandLineOption("cm_primary_node_port", std::to_string(cm_addr->node_port_).c_str());
 }
 
+void KVRpcService::InitLogicalNodeId() {
+  const char* pod_name = std::getenv("POD_NAME");
+  if (pod_name && std::strlen(pod_name) > 0) {
+    // K8s scenario: build "namespace/pod-name" for global uniqueness across namespaces.
+    // POD_NAMESPACE is injected via the downward API alongside POD_NAME.
+    // If POD_NAMESPACE is absent (unusual misconfiguration), fall back to bare pod-name
+    // with a warning — uniqueness is only guaranteed within a single namespace in that case.
+    const char* pod_namespace = std::getenv("POD_NAMESPACE");
+    if (pod_namespace && std::strlen(pod_namespace) > 0) {
+      logical_node_id_ = std::string(pod_namespace) + "/" + pod_name;
+    } else {
+      MLOG_WARN("POD_NAMESPACE env var not set; logical_node_id will be bare pod-name '{}'. "
+                "Uniqueness is only guaranteed within a single namespace.",
+                pod_name);
+      logical_node_id_ = pod_name;
+    }
+  } else if (!FLAGS_ds_logical_node_id.empty()) {
+    logical_node_id_ = FLAGS_ds_logical_node_id;  // Non-K8s: manual flag
+  } else {
+    // No logical_node_id available: fail fast so that K8s restarts the pod with
+    // the correct environment (POD_NAME injected via downward API).
+    // Falling back to ip:port is intentionally NOT done: if the DS later restarts
+    // with POD_NAME set, the logical_id changes, the CM cannot match the old entry
+    // in DEFERRED_RESHARD state, and client IO will fail for the entire deferred
+    // window before a fallback reshard is triggered.
+    MLOG_CRITICAL("DS logical_node_id not set: neither POD_NAME env var nor "
+                  "--ds_logical_node_id flag is provided. Aborting.");
+    std::abort();
+  }
+  MLOG_INFO("DS logical_node_id: {}", logical_node_id_);
+}
+
 void KVRpcService::KeepAlive() {
   while (is_running_) {
     while (is_running_ && !is_registered_) {
@@ -353,12 +387,24 @@ void KVRpcService::RegisterOnCluster() {
   NewNodeHandShakeRequestPB handshake_req;
   handshake_req.mutable_node()->set_ip(ip);
   handshake_req.mutable_node()->set_port(port);
+  handshake_req.set_logical_node_id(logical_node_id_);
   auto handshake_rsp = std::make_shared<NewNodeHandShakeResponsePB>();
   auto handshake_done = [handshake_rsp, this](const google::protobuf::Message *rsp,
                                               const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
     if (!ctx->Failed()) {
       auto response = dynamic_cast<const NewNodeHandShakeResponsePB *>(rsp);
       if (response->ret_code() == CommonErr::OK) {
+        // Initialize KVHashTables for shards assigned by CM
+        if (response->assigned_shard_ids_size() > 0) {
+          std::lock_guard<std::mutex> table_lock(all_table_mtx_);
+          for (auto shard_id : response->assigned_shard_ids()) {
+            if (!all_tables_[shard_id]) {
+              auto* table = new KVHashTable();
+              table->Init(shard_id);
+              all_tables_[shard_id] = table;
+            }
+          }
+        }
         is_registered_ = true;
         register_condv_.post();
       } else {
@@ -393,6 +439,7 @@ void KVRpcService::RegisterToRestartedManager() {
   NewNodeHandShakeRequestPB handshake_req;
   handshake_req.mutable_node()->set_ip(ip);
   handshake_req.mutable_node()->set_port(port);
+  handshake_req.set_logical_node_id(logical_node_id_);
   for (const auto [shard_id, table] : all_tables_) {
     if (table && !table->Empty()) {
       handshake_req.mutable_shard_ids()->Add(shard_id);
@@ -440,6 +487,7 @@ void KVRpcService::HeartBeatToCluster() {
   DataServerHeartBeatRequestPB heartbeat_req;
   heartbeat_req.mutable_node()->set_ip(ip);
   heartbeat_req.mutable_node()->set_port(port);
+  heartbeat_req.set_logical_node_id(logical_node_id_);
   auto heartbeat_rsp = std::make_shared<DataServerHeartBeatResponsePB>();
   auto heartbeat_done = [heartbeat_rsp, this](const google::protobuf::Message *rsp,
                                               const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
@@ -583,9 +631,8 @@ error_code_t KVRpcService::KVPut(std::shared_ptr<simm::common::SimmContext> ctx,
     std::lock_guard<std::mutex> table_lock(all_table_mtx_);
     table = all_tables_[shard_id];
     if (!table) {
-      table = new KVHashTable();
-      table->Init(shard_id);
-      all_tables_[shard_id] = table;
+      MLOG_ERROR("KVPut: shard {} table not initialized (not assigned by CM)", shard_id);
+      return DsErr::KeyNotFound;
     }
   }
   std::unique_ptr<KVMeta, KVObjectPool::KVMetaDeleter> key_meta(object_pool_->AcquireKey(),

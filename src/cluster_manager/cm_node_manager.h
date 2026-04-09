@@ -1,7 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -26,6 +28,22 @@ namespace simm {
 namespace cm {
 
 using NodeStatus = common::NodeStatus;
+
+// Per-logical-node entry tracking stable identity and current physical address
+struct NodeEntry {
+  std::string logical_node_id;    // unique key: "namespace/pod-name" in K8s, or --ds_logical_node_id flag value
+  std::string current_ip_port;    // current physical address (may change on restart)
+  NodeStatus  status{NodeStatus::UNKNOWN};
+  std::chrono::steady_clock::time_point deferred_reshard_since;  // when DEFERRED_RESHARD started
+};
+
+// Handshake processing result
+struct HandshakeResult {
+  enum class Action { NEW_NODE, IP_UPDATE, DEFERRED_RESHARD_REPLACE, REJECT };
+  Action action{Action::REJECT};
+  std::string old_ip_port;                    // previous IP (for DEFERRED_RESHARD_REPLACE / IP_UPDATE)
+  std::vector<shard_id_t> shards_to_assign;   // shards CM decides to assign
+};
 
 class ClusterManagerNodeManager : public std::enable_shared_from_this<ClusterManagerNodeManager> {
  public:
@@ -77,9 +95,41 @@ class ClusterManagerNodeManager : public std::enable_shared_from_this<ClusterMan
   // TODO: will query each resource info from data nodes
   std::unordered_map<std::string, std::shared_ptr<simm::common::NodeResource>> GetAllNodeResource();
 
+  // logical_node_id based interfaces
+
+  // Process a Handshake from DS with logical_node_id.
+  // CM looks up the logical_id in its state table and decides the action.
+  HandshakeResult ProcessHandshake(const std::string& logical_id,
+                                   const std::string& new_ip_port,
+                                   const std::vector<shard_id_t>& reported_shards);
+
+  // Get a node entry by logical_node_id (for HBMonitor state checks)
+  std::optional<NodeEntry> GetNodeEntry(const std::string& logical_id) const;
+
+  // Called on each heartbeat: update logical_id → ip_port mapping
+  error_code_t OnHeartbeat(const std::string& logical_id, const std::string& ip_port);
+
+  // Set node status by logical_node_id (used by HBMonitor).
+  // If expected_status is provided, the update is only applied when the current
+  // status matches expected_status (compare-and-set), preventing stale-snapshot
+  // races between BgHBScanLoop and concurrent ProcessHandshake calls.
+  error_code_t SetNodeStatus(const std::string& logical_id, NodeStatus status,
+                             std::chrono::steady_clock::time_point ts = {},
+                             std::optional<NodeStatus> expected_status = std::nullopt);
+
+  // Resolve logical_node_id from ip:port (reverse lookup)
+  std::string ResolveLogicalId(const std::string& ip_port) const;
+
  private:
   std::shared_ptr<simm::common::NodeResource> getNodeResource(const std::string &addr_str);
   void updateAllNodeResource();
+
+  // Migrate a node's physical address from old_ip_port to new_ip_port:
+  // updates addr_to_logical_, node_status_map_, node_info_map_, logical_node_table_,
+  // and registers the new address via AddNode(). Caller must pass the mutable
+  // NodeEntry copy that will be written back to logical_node_table_.
+  void migrateNodeIp(const std::string& logical_id, NodeEntry& entry,
+                     const std::string& new_ip_port);
 
  private:
   // map to record dataservers' resource stats
@@ -91,6 +141,12 @@ class ClusterManagerNodeManager : public std::enable_shared_from_this<ClusterMan
   // key   : address string(ip:port)
   // value : node status, e.g. alive, dead, ....
   folly::ConcurrentHashMap<std::string, NodeStatus> node_status_map_;
+
+  // logical_node_id based tables
+  // Primary table: logical_node_id → NodeEntry
+  folly::ConcurrentHashMap<std::string, NodeEntry> logical_node_table_;
+  // Reverse lookup: ip:port → logical_node_id
+  folly::ConcurrentHashMap<std::string, std::string> addr_to_logical_;
 
   sicl::rpc::SiRPC *rpc_client_{nullptr};
   std::thread *resource_thread_{nullptr};

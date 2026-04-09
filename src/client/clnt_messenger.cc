@@ -43,6 +43,7 @@ DECLARE_uint32(clnt_syncreq_retry_count);
 DECLARE_bool(clnt_syncreq_enable_retry);
 DECLARE_bool(clnt_use_k8s);
 DECLARE_bool(simm_enable_trace);
+DECLARE_uint32(clnt_deferred_reshard_wait_inSecs);
 
 DECLARE_LOG_MODULE("simm_client");
 
@@ -151,13 +152,47 @@ error_code_t ClientMessenger::Init() {
         } else {
           for (auto [addr, ds_ctx] : ds_conn_ctxs_) {
             if (!ds_ctx->active.load()) {
-              if (CommonErr::OK != build_connection(addr)) {
-                // FIXME(ytji): current behavior is rude to reconnect to all data servers when one or part of them
-                // have issues. The better action is sync with cm and get latest data servers address info, reconnect
-                // to servers which are new extended.
-                should_reinit = true;
-                MLOG_ERROR("Failover thread failed to reconnect to {}, will trigger reinit", addr);
+              // track when DS was first seen as dead
+              {
+                std::lock_guard lg(ds_dead_since_mtx_);
+                if (!ds_dead_since_.count(addr)) {
+                  ds_dead_since_[addr] = std::chrono::steady_clock::now();
+                }
               }
+
+              // Try to reconnect — new DS may have come up with same port
+              if (CommonErr::OK == build_connection(addr)) {
+                std::lock_guard lg(ds_dead_since_mtx_);
+                ds_dead_since_.erase(addr);
+                continue;
+              }
+
+              // Reconnect failed — check if deferred reshard wait window exceeded.
+              // NOTE: CM updates its routing table immediately upon DS handshake (IP update or
+              // replacement), but the client has no way to learn about it promptly because
+              // CM-to-client routing push (RPC_ROUTING_TABLE_UPDATE) is not yet implemented
+              // (see cm_service.cc TODO). Until push is available, the client can only discover
+              // the new IP by polling CM via ReInit() after this wait window expires.
+              // If the DS restarts with a different IP, IO to the affected shards will fail for
+              // up to clnt_deferred_reshard_wait_inSecs seconds. This is a known limitation;
+              // implementing CM→client push will eliminate the gap.
+              std::chrono::duration<double> dur;
+              {
+                std::lock_guard lg(ds_dead_since_mtx_);
+                dur = std::chrono::steady_clock::now() - ds_dead_since_[addr];
+              }
+
+              if (dur > std::chrono::seconds(FLAGS_clnt_deferred_reshard_wait_inSecs)) {
+                // Window expired: CM may have done reshard or IP update, pull new routes
+                {
+                  std::lock_guard lg(ds_dead_since_mtx_);
+                  ds_dead_since_.erase(addr);
+                }
+                should_reinit = true;
+                MLOG_ERROR("Failover thread: DS {} unreachable for {}s (> {}s window), triggering reinit",
+                           addr, static_cast<int>(dur.count()), FLAGS_clnt_deferred_reshard_wait_inSecs);
+              }
+              // else: still within wait window, keep retrying next cycle
             }
           }
         }

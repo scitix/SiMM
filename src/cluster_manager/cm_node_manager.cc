@@ -21,6 +21,8 @@ DECLARE_string(dataserver_svc_name);
 DECLARE_string(dataserver_port_name);
 DECLARE_uint32(rpc_timeout_inSecs);
 DECLARE_uint32(dataserver_resource_interval_inSecs);
+DECLARE_bool(cm_deferred_reshard_enabled);
+DECLARE_uint32(cm_deferred_reshard_window_inSecs);
 
 DECLARE_LOG_MODULE("cluster_manager");
 
@@ -204,6 +206,162 @@ std::unordered_map<std::string, std::shared_ptr<simm::common::NodeResource>>
     resource_map[pair.first] = pair.second;
   }
   return resource_map;
+}
+
+// logical_node_id based methods
+
+void ClusterManagerNodeManager::migrateNodeIp(const std::string& logical_id,
+                                               NodeEntry& entry,
+                                               const std::string& new_ip_port) {
+  addr_to_logical_.erase(entry.current_ip_port);
+  addr_to_logical_.insert_or_assign(new_ip_port, logical_id);
+  node_status_map_.erase(entry.current_ip_port);
+  node_info_map_.erase(entry.current_ip_port);
+  AddNode(new_ip_port);
+  entry.current_ip_port = new_ip_port;
+}
+
+HandshakeResult ClusterManagerNodeManager::ProcessHandshake(
+    const std::string& logical_id,
+    const std::string& new_ip_port,
+    const std::vector<shard_id_t>& reported_shards) {
+
+  HandshakeResult result;
+
+  auto it = logical_node_table_.find(logical_id);
+  if (it == logical_node_table_.end()) {
+    // Case 1: logical_id not seen before → new node registration
+    NodeEntry entry;
+    entry.logical_node_id = logical_id;
+    entry.current_ip_port = new_ip_port;
+    entry.status = NodeStatus::RUNNING;
+    logical_node_table_.insert_or_assign(logical_id, entry);
+    addr_to_logical_.insert_or_assign(new_ip_port, logical_id);
+
+    // Also register in legacy ip:port maps
+    AddNode(new_ip_port);
+
+    result.action = HandshakeResult::Action::NEW_NODE;
+    result.shards_to_assign = reported_shards;
+    MLOG_INFO("New node registered: logical_id={} ip={}", logical_id, new_ip_port);
+    return result;
+  }
+
+  // ConcurrentHashMap iterators yield const refs — copy, mutate, assign back
+  NodeEntry entry = it->second;
+
+  switch (entry.status) {
+    case NodeStatus::DEFERRED_RESHARD: {
+      // Case 2: replacement DS registered while waiting — in-place IP update
+      result.action = HandshakeResult::Action::DEFERRED_RESHARD_REPLACE;
+      result.old_ip_port = entry.current_ip_port;
+      migrateNodeIp(logical_id, entry, new_ip_port);
+      entry.status = NodeStatus::RUNNING;
+      entry.deferred_reshard_since = {};
+      logical_node_table_.assign(logical_id, entry);
+      MLOG_INFO("Node replacement: logical_id={} old_ip={} new_ip={}",
+                logical_id, result.old_ip_port, new_ip_port);
+      return result;
+    }
+
+    case NodeStatus::RUNNING: {
+      result.action = HandshakeResult::Action::IP_UPDATE;
+      result.old_ip_port = entry.current_ip_port;
+      if (entry.current_ip_port == new_ip_port) {
+        // Case 3: DS restarted before HB timeout, same IP. Treat as IP_UPDATE so the
+        // handler looks up shards via GetShardsOwnedByNode and returns them to the DS.
+        // BatchAssignRoutingTable with same addr is a no-op on the routing table.
+        MLOG_INFO("Node re-registration (fast restart): logical_id={} ip={}", logical_id, new_ip_port);
+      } else {
+        // Case 4: IP changed while still RUNNING (rare IP drift)
+        migrateNodeIp(logical_id, entry, new_ip_port);
+        logical_node_table_.assign(logical_id, entry);
+        MLOG_INFO("Node IP update: logical_id={} old_ip={} new_ip={}",
+                  logical_id, result.old_ip_port, new_ip_port);
+      }
+      return result;
+    }
+
+    case NodeStatus::DEAD:
+    default: {
+      // Case 5: node was DEAD (reshard already happened), treat as new
+      migrateNodeIp(logical_id, entry, new_ip_port);
+      entry.status = NodeStatus::RUNNING;
+      entry.deferred_reshard_since = {};
+      logical_node_table_.assign(logical_id, entry);
+      result.action = HandshakeResult::Action::NEW_NODE;
+      result.shards_to_assign = reported_shards;
+      MLOG_INFO("Node rejoin after DEAD: logical_id={} ip={}", logical_id, new_ip_port);
+      return result;
+    }
+  }
+}
+
+std::optional<NodeEntry> ClusterManagerNodeManager::GetNodeEntry(const std::string& logical_id) const {
+  auto it = logical_node_table_.find(logical_id);
+  if (it == logical_node_table_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+error_code_t ClusterManagerNodeManager::OnHeartbeat(const std::string& logical_id,
+                                                     const std::string& ip_port) {
+  auto it = logical_node_table_.find(logical_id);
+  if (it != logical_node_table_.end()) {
+    auto entry = it->second;
+    if (entry.current_ip_port != ip_port) {
+      migrateNodeIp(logical_id, entry, ip_port);
+      logical_node_table_.assign(logical_id, entry);
+    }
+  }
+  return CommonErr::OK;
+}
+
+error_code_t ClusterManagerNodeManager::SetNodeStatus(
+    const std::string& logical_id,
+    NodeStatus status,
+    std::chrono::steady_clock::time_point ts,
+    std::optional<NodeStatus> expected_status) {
+
+  auto it = logical_node_table_.find(logical_id);
+  if (it == logical_node_table_.end()) {
+    MLOG_WARN("SetNodeStatus: logical_id={} not found", logical_id);
+    return CommonErr::TargetNotFound;
+  }
+
+  auto entry = it->second;
+
+  // Compare-and-set: if caller specified an expected status, abort if it no
+  // longer matches (e.g. ProcessHandshake already moved the node back to RUNNING).
+  if (expected_status.has_value() && entry.status != expected_status.value()) {
+    MLOG_WARN("SetNodeStatus: logical_id={} status mismatch (expected={} actual={}), skipping",
+              logical_id,
+              common::NodeStatusToString(expected_status.value()),
+              common::NodeStatusToString(entry.status));
+    return CommonErr::OK;
+  }
+
+  entry.status = status;
+  if (status == NodeStatus::DEFERRED_RESHARD) {
+    entry.deferred_reshard_since = ts;
+  }
+  logical_node_table_.assign(logical_id, entry);
+
+  // Keep legacy map in sync
+  UpdateNodeStatus(entry.current_ip_port, status);
+
+  MLOG_INFO("SetNodeStatus: logical_id={} ip={} status={}",
+            logical_id, entry.current_ip_port, common::NodeStatusToString(status));
+  return CommonErr::OK;
+}
+
+std::string ClusterManagerNodeManager::ResolveLogicalId(const std::string& ip_port) const {
+  auto it = addr_to_logical_.find(ip_port);
+  if (it == addr_to_logical_.end()) {
+    return "";
+  }
+  return it->second;
 }
 
 }  // namespace cm

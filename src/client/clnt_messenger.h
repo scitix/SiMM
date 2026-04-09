@@ -217,6 +217,11 @@ class ClientMessenger {
   std::atomic<bool> failover_flag_{true};
   std::mutex failover_mutex_;
   std::condition_variable failover_condv_;
+
+  // track when each DS was first seen as dead, used for failover wait window
+  std::mutex ds_dead_since_mtx_;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> ds_dead_since_;
+
   std::unique_ptr<simm::trace::TraceServer> trace_server_{nullptr};
 
 #if defined(SIMM_UNIT_TEST)
