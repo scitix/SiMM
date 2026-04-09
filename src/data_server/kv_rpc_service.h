@@ -39,6 +39,7 @@ DECLARE_int32(heartbeat_cooldown_sec);
 DECLARE_string(cm_primary_node_ip);
 DECLARE_int32(cm_rpc_inter_port);
 DECLARE_uint32(busy_wait_timeout_us);
+DECLARE_string(ds_logical_node_id);
 
 namespace simm {
 namespace ds {
@@ -85,6 +86,7 @@ class KVRpcService {
   error_code_t RegisterHandlers();
 
   void SetCMAddressFromK8S();
+  void InitLogicalNodeId();
   void KeepAlive();
   void RegisterOnCluster();
   void RegisterToRestartedManager();
@@ -117,6 +119,7 @@ class KVRpcService {
   std::function<void()> cluster_disconnect_handler_{};
 
   std::string local_ip_;
+  std::string logical_node_id_;  // stable node identity across restarts
   std::deque<std::atomic<size_t>> shard_used_bytes_;
 
   friend class KVCacheEvictor;

@@ -10,3 +10,7 @@ DEFINE_uint32(clnt_cm_addr_check_interval_inSecs,
 DEFINE_int32(clnt_sync_req_timeout_ms, 1000, "simm client sync request timeout in milliseconds, default is 1s");
 DEFINE_int32(clnt_async_req_timeout_ms, 3000, "simm client sync request timeout in milliseconds, default is 3s");
 DEFINE_string(clnt_log_file, "/var/log/simm/simm_clnt.log", "simm client log file path & name");
+// client-side wait window before triggering ReInit on DS failure
+DEFINE_uint32(clnt_deferred_reshard_wait_inSecs, 30,
+              "Client-side wait window before triggering ReInit on DS failure. "
+              "Should be less than CM's cm_deferred_reshard_window_inSecs (default 120s)");

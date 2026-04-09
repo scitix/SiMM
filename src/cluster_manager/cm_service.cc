@@ -146,7 +146,7 @@ error_code_t ClusterManagerService::StartRPCServices() {
   inter_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_NEW_NODE_HANDSHAKE),
       new NewNodeHandshakeHandler(
-          inter_rpc_service_.get(), new NewNodeHandShakeRequestPB, node_manager_, shard_manager_));
+          inter_rpc_service_.get(), new NewNodeHandShakeRequestPB, node_manager_, shard_manager_, hb_monitor_));
   inter_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_NODE_HEARTBEAT),
       new NodeHeartBeatHandler(inter_rpc_service_.get(), new DataServerHeartBeatRequestPB, hb_monitor_));

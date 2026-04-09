@@ -16,6 +16,7 @@
 #include "proto/ds_cm_rpcs.pb.h"
 
 DECLARE_uint32(shard_total_num);
+DECLARE_bool(cm_deferred_reshard_enabled);
 
 DECLARE_LOG_MODULE("cluster_manager");
 
@@ -77,23 +78,83 @@ void NewNodeHandshakeHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> 
   auto req = dynamic_cast<const NewNodeHandShakeRequestPB *>(request);
   auto resp = std::make_shared<NewNodeHandShakeResponsePB>();
   simm::common::NodeAddress node_addr = {req->node().ip(), req->node().port()};
+  std::string addr_str = node_addr.toString();
+  const std::string& logical_id = req->logical_node_id();
   error_code_t ret = CommonErr::OK;
-  if (simm::common::ModuleServiceState::GetInstance().GracePeriodFinished()) {
+
+  if (!logical_id.empty() && simm::common::ModuleServiceState::GetInstance().GracePeriodFinished()) {
+    // Post-grace-period with logical_node_id: process handshake via node manager
+    std::vector<shard_id_t> reported_shards(req->shard_ids().begin(), req->shard_ids().end());
+    auto result = node_manager_->ProcessHandshake(logical_id, addr_str, reported_shards);
+
+    switch (result.action) {
+      case HandshakeResult::Action::DEFERRED_RESHARD_REPLACE: {
+        // Replacement scenario: collect shards from old IP, assign to new IP
+        auto shards = shard_manager_->GetShardsOwnedByNode(result.old_ip_port);
+        shard_manager_->BatchAssignRoutingTable(
+            shards, std::make_shared<simm::common::NodeAddress>(node_addr));
+        hb_monitor_->OnDeferredReshardResolved(logical_id);
+        result.shards_to_assign = std::move(shards);
+        MLOG_INFO("Node handshake replace complete: {} -> {} for {} shards",
+                  result.old_ip_port, addr_str, result.shards_to_assign.size());
+        break;
+      }
+      case HandshakeResult::Action::IP_UPDATE: {
+        // IP changed while RUNNING: update routing table entries to new IP
+        auto shards = shard_manager_->GetShardsOwnedByNode(result.old_ip_port);
+        shard_manager_->BatchAssignRoutingTable(
+            shards, std::make_shared<simm::common::NodeAddress>(node_addr));
+        hb_monitor_->OnDeferredReshardResolved(logical_id);
+        result.shards_to_assign = std::move(shards);
+        MLOG_INFO("Node handshake IP update: {} -> {} for {} shards",
+                  result.old_ip_port, addr_str, result.shards_to_assign.size());
+        break;
+      }
+      case HandshakeResult::Action::NEW_NODE: {
+        // Post-grace-period scale-out: a brand-new logical_node_id not seen before.
+        // Shard assignment for scale-out is not yet supported; no shards assigned here.
+        // TODO: implement scale-out shard assignment
+        MLOG_WARN("New node registered post-grace-period (scale-out not yet supported): logical_id={} ip={}",
+                  logical_id, addr_str);
+        break;
+      }
+      default:
+        ret = CommonErr::CmRegisterNewNodeFailed;
+        break;
+    }
+
+    // Fill assigned_shard_ids in response
+    for (auto sid : result.shards_to_assign) {
+      resp->add_assigned_shard_ids(sid);
+    }
+
+  } else if (simm::common::ModuleServiceState::GetInstance().GracePeriodFinished()) {
     MLOG_INFO("Grace period is already finished, new dataserver({}) will be waited for joining the cluster",
-              node_addr.toString());
-    // already out of grace period, new dataserver nodes will be hold for
-    // one timewindow, and be added in batch after current timewindow finishes
+                addr_str);
+    // Post-grace-period without logical_node_id: legacy behavior
   } else {
-    // still in grace period, just add nodes
-    // FIXME(ytji): needn't to use NodeAddress as intermediary struct
-    MLOG_INFO("Still in Grace period new dataserver({}) will be added into cluster", node_addr.toString());
-    ret = node_manager_->AddNode(node_addr.toString());
-    shard_manager_->BatchAssignRoutingTable(std::vector<shard_id_t>(req->shard_ids().begin(), req->shard_ids().end()),
-                                            std::make_shared<simm::common::NodeAddress>(node_addr));
+    // Still in grace period: register node and assign shards
+    MLOG_INFO("Still in Grace period new dataserver({}) will be added into cluster", addr_str);
+    std::vector<shard_id_t> reported_shards(req->shard_ids().begin(), req->shard_ids().end());
+    shard_manager_->BatchAssignRoutingTable(reported_shards,
+        std::make_shared<simm::common::NodeAddress>(node_addr));
+
+    if (!logical_id.empty()) {
+      // ProcessHandshake (Case 1) calls AddNode internally, so no separate AddNode needed.
+      node_manager_->ProcessHandshake(logical_id, addr_str, reported_shards);
+    } else {
+      // No logical_node_id: legacy registration path (no deferred reshard support)
+      ret = node_manager_->AddNode(addr_str);
+    }
+
+    // Fill assigned_shard_ids in response (echo back what was assigned)
+    for (auto sid : reported_shards) {
+      resp->add_assigned_shard_ids(sid);
+    }
   }
 
   if (ret != CommonErr::OK) {
-    MLOG_ERROR("Failed to register new node({}) into cluster, ret:{}", node_addr.toString(), ret);
+    MLOG_ERROR("Failed to register new node({}) into cluster, ret:{}", addr_str, ret);
   }
   resp->set_ret_code(ret);
   simm::common::Metrics::Instance("cluster_manager")
@@ -116,9 +177,16 @@ void NodeHeartBeatHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx
   auto resp = std::make_shared<DataServerHeartBeatResponsePB>();
   error_code_t ret = CommonErr::OK;
   std::string addr_str = req->node().ip() + ":" + std::to_string(req->node().port());
+  const std::string& logical_id = req->logical_node_id();
 
   if (simm::utils::IsValidV4IPAddr(req->node().ip()) && simm::utils::IsValidPortNum(req->node().port())) {
-    ret = hb_monitor_->OnRecvNodeHeartbeat(addr_str);
+    if (!logical_id.empty()) {
+      // heartbeat keyed by logical_node_id
+      ret = hb_monitor_->OnRecvNodeHeartbeat(logical_id, addr_str);
+    } else {
+      // Legacy: heartbeat keyed by ip:port
+      ret = hb_monitor_->OnRecvNodeHeartbeat(addr_str);
+    }
   } else {
     MLOG_WARN("NodeHeartBeatHandler::Work, invalid node address received:{}", addr_str);
     ret = CommonErr::InvalidArgument;

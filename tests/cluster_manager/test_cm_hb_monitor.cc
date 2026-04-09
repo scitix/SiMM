@@ -28,6 +28,7 @@ DECLARE_uint32(cm_heartbeat_records_perserver);
 DECLARE_uint32(cm_heartbeat_bg_scan_interval_inSecs);
 DECLARE_uint32(cm_heartbeat_timeout_inSecs);
 DECLARE_uint32(cm_cluster_init_grace_period_inSecs);
+DECLARE_uint32(dataserver_min_num);
 DECLARE_string(cm_log_file);
 
 namespace simm {
@@ -360,10 +361,13 @@ TEST_F(ClusterManagerHBMonitorTest, TestHBMonitor) {
 TEST_F(ClusterManagerHBMonitorTest, TestRestartAfterStopResumesHeartbeatScanning) {
   auto old_timeout = FLAGS_cm_heartbeat_timeout_inSecs;
   auto old_scan_interval = FLAGS_cm_heartbeat_bg_scan_interval_inSecs;
+  auto old_min_num = FLAGS_dataserver_min_num;
   auto restore_flags = folly::makeGuard([&]() {
     FLAGS_cm_heartbeat_timeout_inSecs = old_timeout;
     FLAGS_cm_heartbeat_bg_scan_interval_inSecs = old_scan_interval;
+    FLAGS_dataserver_min_num = old_min_num;
   });
+  FLAGS_dataserver_min_num = 0;  // single-node cluster: 0 alive after death is acceptable
   FLAGS_cm_heartbeat_timeout_inSecs = 1;
   FLAGS_cm_heartbeat_bg_scan_interval_inSecs = 1;
 

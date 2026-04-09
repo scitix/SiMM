@@ -16,6 +16,7 @@ namespace common {
 #define FOREACH_NODESTATUS(C) \
   C(UNKNOWN)                  \
   C(RUNNING)                  \
+  C(DEFERRED_RESHARD)         \
   C(DEAD)
 
 #define NODESTATUS_ENUM(name) name,

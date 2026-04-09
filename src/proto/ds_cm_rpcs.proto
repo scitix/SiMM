@@ -27,16 +27,19 @@ import "common.proto";
 message NewNodeHandShakeRequestPB {
   proto.common.NodeAddressPB node = 1;
   repeated uint32 shard_ids = 2;
+  string logical_node_id = 3;  // stable node identity (K8s: namespace/pod-name), CM uses as primary key
 }
 // CM -> SDS
 message NewNodeHandShakeResponsePB {
   sint32 ret_code = 1;
+  repeated uint32 assigned_shard_ids = 2;  // shards CM assigns to this DS (deferred reshard or initial)
 }
 
 // ********** DataServer Heartbeat RPC **********
 // SDS -> CM
 message DataServerHeartBeatRequestPB {
   proto.common.NodeAddressPB node = 1;
+  string logical_node_id = 2;  // same as in Handshake, CM keys heartbeat records by this
 }
 // CM -> SDS
 message DataServerHeartBeatResponsePB {
