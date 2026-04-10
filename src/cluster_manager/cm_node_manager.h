@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -88,6 +89,9 @@ class ClusterManagerNodeManager : public std::enable_shared_from_this<ClusterMan
   // get resource info of a single data node
   std::shared_ptr<simm::common::NodeResource> GetNodeResource(const std::string &addr_str);
 
+  // actively query one data node resource info and refresh cache
+  std::shared_ptr<simm::common::NodeResource> RefreshNodeResource(const std::string &addr_str);
+
   // get status of all data nodes
   // Returns an unordered_map of address string to node status
   std::unordered_map<std::string, NodeStatus> GetAllNodeStatus();
@@ -149,13 +153,20 @@ class ClusterManagerNodeManager : public std::enable_shared_from_this<ClusterMan
   folly::ConcurrentHashMap<std::string, std::string> addr_to_logical_;
 
   sicl::rpc::SiRPC *rpc_client_{nullptr};
+  std::mutex resource_conn_mutex_;
+  std::unordered_map<std::string, std::shared_ptr<sicl::rpc::Connection>> resource_conn_map_;
   std::thread *resource_thread_{nullptr};
   std::atomic<bool> resource_thread_stop_{false};
   folly::Baton<> resource_thread_baton_;
   uint64_t start_timestamp_us_{0};
 
+#if defined(SIMM_UNIT_TEST)
+  std::function<std::shared_ptr<simm::common::NodeResource>(const std::string &)> test_resource_query_hook_;
+#endif
+
   // only for UT test
 #if defined(SIMM_UNIT_TEST)
+  friend class ClusterManagerNodeManagerTestPeer;
   FRIEND_TEST(ClusterManagerHBMonitorTest, TestHBMonitor);
 #endif
 };

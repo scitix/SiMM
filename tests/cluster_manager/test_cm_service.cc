@@ -1,9 +1,11 @@
 #include <chrono>
 #include <latch>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
@@ -36,6 +38,17 @@ namespace simm {
 namespace cm {
 
 using CmSrvPtr = std::unique_ptr<simm::cm::ClusterManagerService>;
+
+class ClusterManagerNodeManagerTestPeer {
+ public:
+  static void SetResourceQueryHook(
+      ClusterManagerNodeManager &node_manager,
+      std::function<std::shared_ptr<simm::common::NodeResource>(const std::string &)> hook) {
+    node_manager.test_resource_query_hook_ = std::move(hook);
+  }
+};
+
+namespace {}  // namespace
 
 class ClusterManagerServiceTest : public ::testing::Test {
  protected:
@@ -777,6 +790,93 @@ TEST_F(ClusterManagerServiceTest, TestNodeRejoinRPC) {
   MLOG_INFO("Cluster Manager has stopped");
 
   FLAGS_cm_cluster_init_grace_period_inSecs = old_flag_val;
+}
+
+TEST_F(ClusterManagerServiceTest, TestListNodesAndGetNodeResourceAdminRPCs) {
+  ASSERT_EQ(cm_service_ptr_->Init(), CommonErr::OK);
+  simm::common::ModuleServiceState::GetInstance().MarkServiceReady();
+  ASSERT_EQ(cm_service_ptr_->StartRPCServices(), CommonErr::OK);
+  auto stop_rpc = folly::makeGuard([&]() { EXPECT_EQ(cm_service_ptr_->StopRPCServices(), CommonErr::OK); });
+
+  ClusterManagerNodeManagerTestPeer::SetResourceQueryHook(
+      *cm_service_ptr_->node_manager_, [](const std::string &addr_str) {
+        EXPECT_EQ(addr_str, "127.0.0.1:44111");
+        return std::make_shared<simm::common::NodeResource>(
+            4096, 1024, 3072, 1024, 123456, std::vector<simm::common::NodeResource::ShardMemResource>{{1, 1024}, {9, 2048}});
+      });
+  ASSERT_EQ(cm_service_ptr_->node_manager_->AddNode("127.0.0.1:44111"), CommonErr::OK);
+  auto resource = cm_service_ptr_->node_manager_->RefreshNodeResource("127.0.0.1:44111");
+  ASSERT_NE(resource, nullptr);
+
+  sicl::rpc::SiRPC *sirpc_client = nullptr;
+  ASSERT_EQ(sicl::rpc::SiRPC::newInstance(sirpc_client, false), sicl::transport::Result::SICL_SUCCESS);
+  auto client = std::unique_ptr<sicl::rpc::SiRPC>(sirpc_client);
+
+  auto make_ctx = []() {
+    sicl::rpc::RpcContext *ctx_p = nullptr;
+    sicl::rpc::RpcContext::newInstance(ctx_p);
+    auto ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
+    ctx->set_timeout(sicl::transport::TimerTick::TIMER_1S);
+    return ctx;
+  };
+
+  std::latch done_latch(2);
+
+  ListNodesRequestPB list_req;
+  auto *list_rsp = new ListNodesResponsePB();
+  client->SendRequest(
+      "127.0.0.1",
+      FLAGS_cm_rpc_admin_port,
+      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_NODE_REQ),
+      list_req,
+      list_rsp,
+      make_ctx(),
+      [&done_latch, list_rsp](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+        EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
+        auto response = dynamic_cast<const ListNodesResponsePB *>(rsp);
+        ASSERT_NE(response, nullptr);
+        ASSERT_EQ(response->ret_code(), CommonErr::OK);
+        ASSERT_EQ(response->nodes_size(), 1);
+        EXPECT_EQ(response->nodes(0).node_address().ip(), "127.0.0.1");
+        EXPECT_EQ(response->nodes(0).node_address().port(), 44111);
+        EXPECT_EQ(response->nodes(0).resource().mem_total_bytes(), 4096);
+        EXPECT_EQ(response->nodes(0).resource().mem_allocated_bytes(), 1024);
+        EXPECT_EQ(response->nodes(0).resource().mem_used_bytes(), 3072);
+        EXPECT_EQ(response->nodes(0).resource().last_report_timestamp_us(), 123456);
+        delete list_rsp;
+        done_latch.count_down();
+      });
+
+  GetNodeResourceRequestPB detail_req;
+  detail_req.mutable_node()->set_ip("127.0.0.1");
+  detail_req.mutable_node()->set_port(44111);
+  auto *detail_rsp = new GetNodeResourceResponsePB();
+  client->SendRequest("127.0.0.1",
+                      FLAGS_cm_rpc_admin_port,
+                      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_GET_NODE_RESOURCE_REQ),
+                      detail_req,
+                      detail_rsp,
+                      make_ctx(),
+                      [&done_latch, detail_rsp](const google::protobuf::Message *rsp,
+                                                const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+                        EXPECT_EQ(ctx->ErrorCode(), sicl::transport::Result::SICL_SUCCESS);
+                        auto response = dynamic_cast<const GetNodeResourceResponsePB *>(rsp);
+                        ASSERT_NE(response, nullptr);
+                        ASSERT_EQ(response->ret_code(), CommonErr::OK);
+                        EXPECT_EQ(response->node().resource().mem_total_bytes(), 4096);
+                        EXPECT_EQ(response->node().resource().mem_allocated_bytes(), 1024);
+                        EXPECT_EQ(response->node().resource().mem_free_bytes(), 1024);
+                        EXPECT_EQ(response->node().resource().mem_used_bytes(), 3072);
+                        ASSERT_EQ(response->shard_resources_size(), 2);
+                        EXPECT_EQ(response->shard_resources(0).shard_id(), 1);
+                        EXPECT_EQ(response->shard_resources(0).mem_used_bytes(), 1024);
+                        EXPECT_EQ(response->shard_resources(1).shard_id(), 9);
+                        EXPECT_EQ(response->shard_resources(1).mem_used_bytes(), 2048);
+                        delete detail_rsp;
+                        done_latch.count_down();
+                      });
+
+  done_latch.wait();
 }
 
 }  // namespace cm

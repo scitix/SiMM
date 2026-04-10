@@ -58,11 +58,8 @@ KVRpcService::~KVRpcService() {
     keepalive_thread_->join();
     keepalive_thread_.reset();
   }
-  (void)io_service_.reset();
-  (void)mgmt_client_.reset();
-  (void)mgt_service_.reset();
-  (void)admin_rpc_service_.reset();
-  (void)object_pool_.release();  // static variable cannot be deleted
+  // cache_pool_ relies on the mempool owned by io_service_, so release cache-related
+  // objects before destroying the RPC services.
   cache_pool_.reset();
   cache_evictor_.reset();
   for (auto [_, table] : all_tables_) {
@@ -70,6 +67,11 @@ KVRpcService::~KVRpcService() {
       delete table;
   }
   all_tables_.clear();
+  (void)mgmt_client_.reset();
+  (void)mgt_service_.reset();
+  (void)admin_rpc_service_.reset();
+  (void)io_service_.reset();
+  (void)object_pool_.release();  // static variable cannot be deleted
 }
 
 void KVRpcService::SetClusterDisconnectHandler(std::function<void()> handler) {
@@ -631,8 +633,10 @@ error_code_t KVRpcService::KVPut(std::shared_ptr<simm::common::SimmContext> ctx,
     std::lock_guard<std::mutex> table_lock(all_table_mtx_);
     table = all_tables_[shard_id];
     if (!table) {
-      MLOG_ERROR("KVPut: shard {} table not initialized (not assigned by CM)", shard_id);
-      return DsErr::KeyNotFound;
+      MLOG_WARN("KVPut: shard {} table not initialized, create lazily on first write", shard_id);
+      table = new KVHashTable();
+      table->Init(shard_id);
+      all_tables_[shard_id] = table;
     }
   }
   std::unique_ptr<KVMeta, KVObjectPool::KVMetaDeleter> key_meta(object_pool_->AcquireKey(),
@@ -861,10 +865,16 @@ void KVRpcService::GetResourceStats(const DataServerResourceRequestPB *req, Data
   rsp->mutable_node()->set_ip(ip);
   rsp->mutable_node()->set_port(port);
   size_t mem_total_bytes = cache_pool_->mem_total_bytes();
-  size_t mem_used_bytes = cache_pool_->mem_used_bytes();
+  size_t mem_allocated_bytes = cache_pool_->mem_used_bytes();
+  size_t mem_used_bytes = 0;
+  for (uint32_t s = 0; s < FLAGS_shard_total_num; s++) {
+    mem_used_bytes += shard_used_bytes_[s].load(std::memory_order_relaxed);
+  }
   rsp->set_mem_total_bytes(mem_total_bytes);
+  rsp->set_mem_allocated_bytes(mem_allocated_bytes);
   rsp->set_mem_used_bytes(mem_used_bytes);
   rsp->set_mem_free_bytes(mem_total_bytes - mem_used_bytes);
+  rsp->set_last_report_timestamp_us(simm::utils::current_microseconds());
 
   rsp->mutable_shard_mem_infos()->Reserve(FLAGS_shard_total_num);
   for (uint32_t s = 0; s < FLAGS_shard_total_num; s++) {

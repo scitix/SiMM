@@ -27,6 +27,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -105,8 +106,38 @@ std::string convert_to_readable_size(uint64_t bytes_num) {
 }
 
 struct LatencyStats {
-  static constexpr std::array<uint64_t, 15> kBucketUpperUs =
-      {50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000, UINT64_MAX};
+  static constexpr std::array<uint64_t, 32> kBucketUpperUs = {25,
+                                                              50,
+                                                              75,
+                                                              100,
+                                                              150,
+                                                              200,
+                                                              300,
+                                                              400,
+                                                              500,
+                                                              750,
+                                                              1000,
+                                                              1500,
+                                                              2000,
+                                                              3000,
+                                                              5000,
+                                                              7500,
+                                                              10000,
+                                                              15000,
+                                                              20000,
+                                                              30000,
+                                                              50000,
+                                                              75000,
+                                                              100000,
+                                                              150000,
+                                                              200000,
+                                                              300000,
+                                                              500000,
+                                                              750000,
+                                                              1000000,
+                                                              2000000,
+                                                              5000000,
+                                                              UINT64_MAX};
 
   void add(micro_ts d) {
     const auto us = static_cast<uint64_t>(std::max<int64_t>(0, d.count()));
@@ -132,6 +163,26 @@ struct LatencyStats {
     }
   }
 
+  LatencyStats delta_from(const LatencyStats &base) const {
+    LatencyStats delta;
+    delta.count_ = count_ >= base.count_ ? count_ - base.count_ : 0;
+    delta.total_us_ = total_us_ >= base.total_us_ ? total_us_ - base.total_us_ : 0;
+    delta.min_us_ = delta.count_ == 0 ? 0 : std::numeric_limits<uint64_t>::max();
+    delta.max_us_ = 0;
+    for (size_t i = 0; i < bucket_counts_.size(); ++i) {
+      delta.bucket_counts_[i] =
+          bucket_counts_[i] >= base.bucket_counts_[i] ? bucket_counts_[i] - base.bucket_counts_[i] : 0;
+      if (delta.bucket_counts_[i] > 0) {
+        delta.min_us_ = std::min(delta.min_us_, kBucketUpperUs[i]);
+        delta.max_us_ = kBucketUpperUs[i];
+      }
+    }
+    if (delta.min_us_ == std::numeric_limits<uint64_t>::max()) {
+      delta.min_us_ = 0;
+    }
+    return delta;
+  }
+
   double avg_us() const { return count_ == 0 ? 0.0 : static_cast<double>(total_us_) / static_cast<double>(count_); }
 
   uint64_t percentile(double pct) const {
@@ -154,6 +205,46 @@ struct LatencyStats {
   uint64_t min_us_{std::numeric_limits<uint64_t>::max()};
   uint64_t max_us_{0};
   std::array<uint64_t, kBucketUpperUs.size()> bucket_counts_{};
+};
+
+struct FailureBreakdown {
+  void merge(const FailureBreakdown &o) {
+    put_error_rc_ += o.put_error_rc_;
+    overwrite_error_rc_ += o.overwrite_error_rc_;
+    get_error_rc_ += o.get_error_rc_;
+    get_size_mismatch_ += o.get_size_mismatch_;
+    get_data_mismatch_ += o.get_data_mismatch_;
+    exists_error_rc_ += o.exists_error_rc_;
+    exists_unexpected_hit_ += o.exists_unexpected_hit_;
+    delete_error_rc_ += o.delete_error_rc_;
+    submit_error_rc_ += o.submit_error_rc_;
+    for (const auto &[rc, cnt] : o.error_code_counts_) {
+      error_code_counts_[rc] += cnt;
+    }
+  }
+
+  void add_error_code(int32_t rc) {
+    if (rc != CommonErr::OK) {
+      ++error_code_counts_[rc];
+    }
+  }
+
+  bool empty() const {
+    return put_error_rc_ == 0 && overwrite_error_rc_ == 0 && get_error_rc_ == 0 && get_size_mismatch_ == 0 &&
+           get_data_mismatch_ == 0 && exists_error_rc_ == 0 && exists_unexpected_hit_ == 0 && delete_error_rc_ == 0 &&
+           submit_error_rc_ == 0;
+  }
+
+  uint64_t put_error_rc_{0};
+  uint64_t overwrite_error_rc_{0};
+  uint64_t get_error_rc_{0};
+  uint64_t get_size_mismatch_{0};
+  uint64_t get_data_mismatch_{0};
+  uint64_t exists_error_rc_{0};
+  uint64_t exists_unexpected_hit_{0};
+  uint64_t delete_error_rc_{0};
+  uint64_t submit_error_rc_{0};
+  std::map<int32_t, uint64_t> error_code_counts_;
 };
 
 struct ThreadStats {
@@ -186,13 +277,14 @@ struct ThreadStats {
     put_size_bytes += o.put_size_bytes;
     get_size_bytes += o.get_size_bytes;
     latency_.merge(o.latency_);
+    failure_breakdown_.merge(o.failure_breakdown_);
   }
 
   uint64_t total_ops() const { return put_ + overwrite_put_ + get_ + exists_ + del_ + mput_ + mget_; }
 
   uint64_t total_failures() const {
     return put_fails_ + overwrite_put_fails_ + get_fails_ + exists_fails_ + del_fails_ + mput_fails_ + mget_fails_ +
-           submit_fails_ + data_mismatch_;
+           submit_fails_;
   }
 
   uint64_t put_{0};
@@ -223,6 +315,7 @@ struct ThreadStats {
   uint64_t put_size_bytes{0};
   uint64_t get_size_bytes{0};
   LatencyStats latency_{};
+  FailureBreakdown failure_breakdown_{};
 };
 
 struct ValueSpec {
@@ -240,8 +333,9 @@ enum class OpType {
 
 struct WorkerRuntime {
   explicit WorkerRuntime(uint32_t tid, size_t keyspace, size_t key_len_limit)
-      : slots(keyspace), keys(simm::tools::stable_test::BuildWorkerKeyspace(tid, keyspace, key_len_limit)) {}
+      : tid(tid), slots(keyspace), keys(simm::tools::stable_test::BuildWorkerKeyspace(tid, keyspace, key_len_limit)) {}
 
+  uint32_t tid;
   mutable std::mutex mutex;
   std::condition_variable cv;
   ThreadStats stats;
@@ -261,6 +355,116 @@ struct PendingSingleOp {
   std::shared_ptr<simm::clnt::Data> data_holder;
   steady_clock_t::time_point start_ts;
 };
+
+ThreadStats DeltaStats(const ThreadStats &snapshot, const ThreadStats &base) {
+  ThreadStats delta = snapshot;
+  delta.put_ -= base.put_;
+  delta.put_fails_ -= base.put_fails_;
+  delta.put_succs_ -= base.put_succs_;
+  delta.overwrite_put_ -= base.overwrite_put_;
+  delta.overwrite_put_fails_ -= base.overwrite_put_fails_;
+  delta.overwrite_put_succs_ -= base.overwrite_put_succs_;
+  delta.get_ -= base.get_;
+  delta.get_fails_ -= base.get_fails_;
+  delta.get_succs_ -= base.get_succs_;
+  delta.exists_ -= base.exists_;
+  delta.exists_fails_ -= base.exists_fails_;
+  delta.exists_succs_ -= base.exists_succs_;
+  delta.del_ -= base.del_;
+  delta.del_fails_ -= base.del_fails_;
+  delta.del_succs_ -= base.del_succs_;
+  delta.mput_ -= base.mput_;
+  delta.mput_fails_ -= base.mput_fails_;
+  delta.mput_succs_ -= base.mput_succs_;
+  delta.mget_ -= base.mget_;
+  delta.mget_fails_ -= base.mget_fails_;
+  delta.mget_succs_ -= base.mget_succs_;
+  delta.data_match_ -= base.data_match_;
+  delta.data_mismatch_ -= base.data_mismatch_;
+  delta.expected_miss_ -= base.expected_miss_;
+  delta.submit_fails_ -= base.submit_fails_;
+  delta.put_size_bytes -= base.put_size_bytes;
+  delta.get_size_bytes -= base.get_size_bytes;
+  delta.latency_ = snapshot.latency_.delta_from(base.latency_);
+  return delta;
+}
+
+std::string FormatTopErrorCodes(const std::map<int32_t, uint64_t> &error_code_counts, size_t limit = 6) {
+  if (error_code_counts.empty()) {
+    return "-";
+  }
+  std::vector<std::pair<int32_t, uint64_t>> entries(error_code_counts.begin(), error_code_counts.end());
+  std::sort(entries.begin(), entries.end(), [](const auto &lhs, const auto &rhs) {
+    if (lhs.second != rhs.second) {
+      return lhs.second > rhs.second;
+    }
+    return lhs.first < rhs.first;
+  });
+
+  std::ostringstream oss;
+  for (size_t i = 0; i < std::min(limit, entries.size()); ++i) {
+    if (i > 0) {
+      oss << ", ";
+    }
+    oss << entries[i].first << ":" << entries[i].second;
+  }
+  return oss.str();
+}
+
+void PrintFailureBreakdown(const FailureBreakdown &b) {
+  if (b.empty()) {
+    std::cout << "FailureBreakdown: -\n";
+    return;
+  }
+
+  std::cout << "FailureBreakdown: "
+            << "PutErrRc=" << b.put_error_rc_ << ", "
+            << "OverwriteErrRc=" << b.overwrite_error_rc_ << ", "
+            << "GetErrRc=" << b.get_error_rc_ << ", "
+            << "GetSizeMismatch=" << b.get_size_mismatch_ << ", "
+            << "GetDataMismatch=" << b.get_data_mismatch_ << ", "
+            << "ExistsErrRc=" << b.exists_error_rc_ << ", "
+            << "ExistsUnexpectedHit=" << b.exists_unexpected_hit_ << ", "
+            << "DeleteErrRc=" << b.delete_error_rc_ << ", "
+            << "SubmitErrRc=" << b.submit_error_rc_ << "\n"
+            << "TopErrorCodes    : " << FormatTopErrorCodes(b.error_code_counts_) << "\n";
+}
+
+void PrintTopThreadStats(const std::vector<std::pair<uint32_t, ThreadStats>> &snapshots, uint64_t elapsed_secs, bool is_delta) {
+  struct Entry {
+    uint32_t tid{0};
+    ThreadStats stats;
+  };
+
+  std::vector<Entry> entries;
+  entries.reserve(snapshots.size());
+  for (const auto &[tid, stats] : snapshots) {
+    entries.push_back(Entry{tid, stats});
+  }
+
+  std::sort(entries.begin(), entries.end(), [](const Entry &lhs, const Entry &rhs) {
+    if (lhs.stats.total_failures() != rhs.stats.total_failures()) {
+      return lhs.stats.total_failures() > rhs.stats.total_failures();
+    }
+    if (lhs.stats.total_ops() != rhs.stats.total_ops()) {
+      return lhs.stats.total_ops() > rhs.stats.total_ops();
+    }
+    return lhs.tid < rhs.tid;
+  });
+
+  const size_t limit = entries.size() <= 8 ? entries.size() : 8;
+  std::cout << "ThreadBreakdown  : " << (is_delta ? "delta" : "total") << ", top " << limit << " thread(s)\n";
+  for (size_t i = 0; i < limit && i < entries.size(); ++i) {
+    const auto &e = entries[i];
+    const double qps =
+        elapsed_secs == 0 ? 0.0 : static_cast<double>(e.stats.total_ops()) / static_cast<double>(elapsed_secs);
+    std::cout << "  tid=" << e.tid << " ops=" << e.stats.total_ops() << " fails=" << e.stats.total_failures()
+              << " qps=" << std::fixed << std::setprecision(2) << qps << " get_fails=" << e.stats.get_fails_
+              << " exists_fails=" << e.stats.exists_fails_ << " del_fails=" << e.stats.del_fails_
+              << " data_mismatch=" << e.stats.data_mismatch_ << " avg_us=" << e.stats.latency_.avg_us()
+              << " p99_us=" << e.stats.latency_.percentile(0.99) << "\n";
+  }
+}
 
 uint32_t choose_size(uint32_t limit) {
   return FLAGS_fixed_kvsize ? limit : folly::Random::rand32(1, limit + 1);
@@ -294,6 +498,12 @@ void RecordLatency(ThreadStats &stats, steady_clock_t::time_point start_ts) {
 }
 
 void print_stats(const ThreadStats &s, uint32_t threads, uint64_t elapsed_secs, bool is_delta) {
+  static constexpr const char *kRed = "\033[31m";
+  static constexpr const char *kGreen = "\033[32m";
+  static constexpr const char *kReset = "\033[0m";
+  auto red_label = [&](const char *label) { return std::string(kRed) + label + kReset; };
+  auto green_label = [&](const char *label) { return std::string(kGreen) + label + kReset; };
+
   const double qps = elapsed_secs == 0 ? 0.0 : static_cast<double>(s.total_ops()) / static_cast<double>(elapsed_secs);
   const double throughput_mb = elapsed_secs == 0 ? 0.0
                                                  : static_cast<double>(s.put_size_bytes + s.get_size_bytes) /
@@ -304,31 +514,31 @@ void print_stats(const ThreadStats &s, uint32_t threads, uint64_t elapsed_secs, 
             << "Threads         : " << threads << "\n"
             << "ElapsedSecs     : " << elapsed_secs << "\n"
             << "TotalOps        : " << s.total_ops() << "\n"
-            << "Failures        : " << s.total_failures() << "\n"
-            << "SubmitFails     : " << s.submit_fails_ << "\n"
+            << red_label("Failures        ") << ": " << s.total_failures() << "\n"
+            << red_label("SubmitFails     ") << ": " << s.submit_fails_ << "\n"
             << "PutCnt          : " << s.put_ << "\n"
-            << "PutFails        : " << s.put_fails_ << "\n"
-            << "PutSuccs        : " << s.put_succs_ << "\n"
+            << red_label("PutFails        ") << ": " << s.put_fails_ << "\n"
+            << green_label("PutSuccs        ") << ": " << s.put_succs_ << "\n"
             << "OverwriteCnt    : " << s.overwrite_put_ << "\n"
-            << "OverwriteFails  : " << s.overwrite_put_fails_ << "\n"
-            << "OverwriteSuccs  : " << s.overwrite_put_succs_ << "\n"
+            << red_label("OverwriteFails  ") << ": " << s.overwrite_put_fails_ << "\n"
+            << green_label("OverwriteSuccs  ") << ": " << s.overwrite_put_succs_ << "\n"
             << "GetCnt          : " << s.get_ << "\n"
-            << "GetFails        : " << s.get_fails_ << "\n"
-            << "GetSuccs        : " << s.get_succs_ << "\n"
+            << red_label("GetFails        ") << ": " << s.get_fails_ << "\n"
+            << green_label("GetSuccs        ") << ": " << s.get_succs_ << "\n"
             << "ExistsCnt       : " << s.exists_ << "\n"
-            << "ExistsFails     : " << s.exists_fails_ << "\n"
-            << "ExistsSuccs     : " << s.exists_succs_ << "\n"
+            << red_label("ExistsFails     ") << ": " << s.exists_fails_ << "\n"
+            << green_label("ExistsSuccs     ") << ": " << s.exists_succs_ << "\n"
             << "DeleteCnt       : " << s.del_ << "\n"
-            << "DeleteFails     : " << s.del_fails_ << "\n"
-            << "DeleteSuccs     : " << s.del_succs_ << "\n"
+            << red_label("DeleteFails     ") << ": " << s.del_fails_ << "\n"
+            << green_label("DeleteSuccs     ") << ": " << s.del_succs_ << "\n"
             << "MPutCnt         : " << s.mput_ << "\n"
-            << "MPutFails       : " << s.mput_fails_ << "\n"
-            << "MPutSuccs       : " << s.mput_succs_ << "\n"
+            << red_label("MPutFails       ") << ": " << s.mput_fails_ << "\n"
+            << green_label("MPutSuccs       ") << ": " << s.mput_succs_ << "\n"
             << "MGetCnt         : " << s.mget_ << "\n"
-            << "MGetFails       : " << s.mget_fails_ << "\n"
-            << "MGetSuccs       : " << s.mget_succs_ << "\n"
-            << "DataMatch       : " << s.data_match_ << "\n"
-            << "DataMismatch    : " << s.data_mismatch_ << "\n"
+            << red_label("MGetFails       ") << ": " << s.mget_fails_ << "\n"
+            << green_label("MGetSuccs       ") << ": " << s.mget_succs_ << "\n"
+            << green_label("DataMatch       ") << ": " << s.data_match_ << "\n"
+            << red_label("DataMismatch    ") << ": " << s.data_mismatch_ << "\n"
             << "ExpectedMiss    : " << s.expected_miss_ << "\n"
             << "PutSize         : " << convert_to_readable_size(s.put_size_bytes) << "\n"
             << "GetSize         : " << convert_to_readable_size(s.get_size_bytes) << "\n"
@@ -338,8 +548,9 @@ void print_stats(const ThreadStats &s, uint32_t threads, uint64_t elapsed_secs, 
             << "P50LatencyUs    : " << s.latency_.percentile(0.50) << "\n"
             << "P95LatencyUs    : " << s.latency_.percentile(0.95) << "\n"
             << "P99LatencyUs    : " << s.latency_.percentile(0.99) << "\n"
-            << "MaxLatencyUs    : " << s.latency_.max_us_ << "\n"
-            << std::endl;
+            << "MaxLatencyUs    : " << s.latency_.max_us_ << "\n";
+  PrintFailureBreakdown(s.failure_breakdown_);
+  std::cout << std::endl;
 }
 
 void usage() {
@@ -530,6 +741,31 @@ ThreadStats SnapshotStats(const std::vector<std::shared_ptr<WorkerRuntime>> &wor
   return aggregated;
 }
 
+std::vector<std::pair<uint32_t, ThreadStats>> SnapshotPerWorkerStats(const std::vector<std::shared_ptr<WorkerRuntime>> &workers) {
+  std::vector<std::pair<uint32_t, ThreadStats>> snapshots;
+  snapshots.reserve(workers.size());
+  for (const auto &worker : workers) {
+    std::lock_guard lock(worker->mutex);
+    snapshots.emplace_back(worker->tid, worker->stats);
+  }
+  return snapshots;
+}
+
+std::vector<std::pair<uint32_t, ThreadStats>> DeltaPerWorkerStats(
+    const std::vector<std::pair<uint32_t, ThreadStats>> &snapshot,
+    const std::vector<std::pair<uint32_t, ThreadStats>> &base) {
+  std::vector<std::pair<uint32_t, ThreadStats>> deltas;
+  deltas.reserve(snapshot.size());
+  for (size_t i = 0; i < snapshot.size(); ++i) {
+    if (i < base.size() && snapshot[i].first == base[i].first) {
+      deltas.emplace_back(snapshot[i].first, DeltaStats(snapshot[i].second, base[i].second));
+    } else {
+      deltas.emplace_back(snapshot[i].first, snapshot[i].second);
+    }
+  }
+  return deltas;
+}
+
 void RecordExpectedExistsResult(ThreadStats &stats, bool expected_exists, int rc) {
   ++stats.exists_;
   if (expected_exists) {
@@ -537,6 +773,8 @@ void RecordExpectedExistsResult(ThreadStats &stats, bool expected_exists, int rc
       ++stats.exists_succs_;
     } else {
       ++stats.exists_fails_;
+      ++stats.failure_breakdown_.exists_error_rc_;
+      stats.failure_breakdown_.add_error_code(rc);
     }
     return;
   }
@@ -547,6 +785,7 @@ void RecordExpectedExistsResult(ThreadStats &stats, bool expected_exists, int rc
       ++stats.expected_miss_;
     } else {
       ++stats.exists_fails_;
+      ++stats.failure_breakdown_.exists_unexpected_hit_;
     }
   } else {
     ++stats.exists_succs_;
@@ -613,9 +852,12 @@ void RunSyncSingleOp(uint32_t tid, simm::clnt::KVStore &kvstore, WorkerRuntime &
     } else {
       if (op.overwrite) {
         ++runtime.stats.overwrite_put_fails_;
+        ++runtime.stats.failure_breakdown_.overwrite_error_rc_;
       } else {
         ++runtime.stats.put_fails_;
+        ++runtime.stats.failure_breakdown_.put_error_rc_;
       }
+      runtime.stats.failure_breakdown_.add_error_code(rc);
     }
     return;
   }
@@ -633,9 +875,18 @@ void RunSyncSingleOp(uint32_t tid, simm::clnt::KVStore &kvstore, WorkerRuntime &
       ++runtime.stats.get_succs_;
       ++runtime.stats.data_match_;
       runtime.stats.get_size_bytes += op.previous_spec.size;
-    } else {
+    } else if (rc == static_cast<int32_t>(op.previous_spec.size)) {
       ++runtime.stats.get_fails_;
       ++runtime.stats.data_mismatch_;
+      ++runtime.stats.failure_breakdown_.get_data_mismatch_;
+    } else {
+      ++runtime.stats.get_fails_;
+      if (rc >= 0) {
+        ++runtime.stats.failure_breakdown_.get_size_mismatch_;
+      } else {
+        ++runtime.stats.failure_breakdown_.get_error_rc_;
+        runtime.stats.failure_breakdown_.add_error_code(rc);
+      }
     }
     return;
   }
@@ -664,6 +915,8 @@ void RunSyncSingleOp(uint32_t tid, simm::clnt::KVStore &kvstore, WorkerRuntime &
     }
   } else {
     ++runtime.stats.del_fails_;
+    ++runtime.stats.failure_breakdown_.delete_error_rc_;
+    runtime.stats.failure_breakdown_.add_error_code(rc);
   }
 }
 
@@ -727,6 +980,8 @@ void RunSyncBatchOp(uint32_t tid, simm::clnt::KVStore &kvstore, WorkerRuntime &r
         runtime.slots[slots[i]] = specs[i];
       } else {
         ++runtime.stats.put_fails_;
+        ++runtime.stats.failure_breakdown_.put_error_rc_;
+        runtime.stats.failure_breakdown_.add_error_code(put_rets[i]);
         all_ok = false;
       }
     }
@@ -761,7 +1016,15 @@ void RunSyncBatchOp(uint32_t tid, simm::clnt::KVStore &kvstore, WorkerRuntime &r
         runtime.stats.get_size_bytes += specs[i].size;
       } else {
         ++runtime.stats.get_fails_;
-        ++runtime.stats.data_mismatch_;
+        if (get_rets[i] == static_cast<int32_t>(specs[i].size)) {
+          ++runtime.stats.data_mismatch_;
+          ++runtime.stats.failure_breakdown_.get_data_mismatch_;
+        } else if (get_rets[i] >= 0) {
+          ++runtime.stats.failure_breakdown_.get_size_mismatch_;
+        } else {
+          ++runtime.stats.failure_breakdown_.get_error_rc_;
+          runtime.stats.failure_breakdown_.add_error_code(get_rets[i]);
+        }
         all_ok = false;
       }
     }
@@ -840,9 +1103,12 @@ void SubmitAsyncSingleOp(uint32_t tid,
       } else {
         if (op.overwrite) {
           ++runtime->stats.overwrite_put_fails_;
+          ++runtime->stats.failure_breakdown_.overwrite_error_rc_;
         } else {
           ++runtime->stats.put_fails_;
+          ++runtime->stats.failure_breakdown_.put_error_rc_;
         }
+        runtime->stats.failure_breakdown_.add_error_code(result);
       }
       if (runtime->inflight > 0) {
         --runtime->inflight;
@@ -852,6 +1118,8 @@ void SubmitAsyncSingleOp(uint32_t tid,
     if (rc != CommonErr::OK) {
       std::lock_guard lock(runtime->mutex);
       ++runtime->stats.submit_fails_;
+      ++runtime->stats.failure_breakdown_.submit_error_rc_;
+      runtime->stats.failure_breakdown_.add_error_code(rc);
       if (runtime->inflight > 0) {
         --runtime->inflight;
       }
@@ -873,9 +1141,18 @@ void SubmitAsyncSingleOp(uint32_t tid,
         ++runtime->stats.get_succs_;
         ++runtime->stats.data_match_;
         runtime->stats.get_size_bytes += op.previous_spec.size;
-      } else {
+      } else if (result == static_cast<int>(op.previous_spec.size)) {
         ++runtime->stats.get_fails_;
         ++runtime->stats.data_mismatch_;
+        ++runtime->stats.failure_breakdown_.get_data_mismatch_;
+      } else {
+        ++runtime->stats.get_fails_;
+        if (result >= 0) {
+          ++runtime->stats.failure_breakdown_.get_size_mismatch_;
+        } else {
+          ++runtime->stats.failure_breakdown_.get_error_rc_;
+          runtime->stats.failure_breakdown_.add_error_code(result);
+        }
       }
       if (runtime->inflight > 0) {
         --runtime->inflight;
@@ -885,6 +1162,8 @@ void SubmitAsyncSingleOp(uint32_t tid,
     if (rc != CommonErr::OK) {
       std::lock_guard lock(runtime->mutex);
       ++runtime->stats.submit_fails_;
+      ++runtime->stats.failure_breakdown_.submit_error_rc_;
+      runtime->stats.failure_breakdown_.add_error_code(rc);
       if (runtime->inflight > 0) {
         --runtime->inflight;
       }
@@ -906,6 +1185,8 @@ void SubmitAsyncSingleOp(uint32_t tid,
     if (rc != CommonErr::OK) {
       std::lock_guard lock(runtime->mutex);
       ++runtime->stats.submit_fails_;
+      ++runtime->stats.failure_breakdown_.submit_error_rc_;
+      runtime->stats.failure_breakdown_.add_error_code(rc);
       if (runtime->inflight > 0) {
         --runtime->inflight;
       }
@@ -930,6 +1211,8 @@ void SubmitAsyncSingleOp(uint32_t tid,
       }
     } else {
       ++runtime->stats.del_fails_;
+      ++runtime->stats.failure_breakdown_.delete_error_rc_;
+      runtime->stats.failure_breakdown_.add_error_code(result);
     }
     if (runtime->inflight > 0) {
       --runtime->inflight;
@@ -939,6 +1222,8 @@ void SubmitAsyncSingleOp(uint32_t tid,
   if (rc != CommonErr::OK) {
     std::lock_guard lock(runtime->mutex);
     ++runtime->stats.submit_fails_;
+    ++runtime->stats.failure_breakdown_.submit_error_rc_;
+    runtime->stats.failure_breakdown_.add_error_code(rc);
     if (runtime->inflight > 0) {
       --runtime->inflight;
     }
@@ -1000,6 +1285,7 @@ int main(int argc, char **argv) {
   auto test_start_ts = steady_clock_t::now();
   auto test_end_ts = test_start_ts + std::chrono::seconds(FLAGS_time);
   ThreadStats last_snapshot;
+  std::vector<std::pair<uint32_t, ThreadStats>> last_worker_snapshots;
   auto reporter = std::thread([&]() {
     while (!stop_threads.load(std::memory_order_acquire)) {
       std::this_thread::sleep_for(std::chrono::seconds(FLAGS_report_interval_inSecs));
@@ -1007,36 +1293,14 @@ int main(int argc, char **argv) {
         break;
       }
       auto snapshot = SnapshotStats(workers);
-      ThreadStats delta = snapshot;
-      delta.put_ -= last_snapshot.put_;
-      delta.put_fails_ -= last_snapshot.put_fails_;
-      delta.put_succs_ -= last_snapshot.put_succs_;
-      delta.overwrite_put_ -= last_snapshot.overwrite_put_;
-      delta.overwrite_put_fails_ -= last_snapshot.overwrite_put_fails_;
-      delta.overwrite_put_succs_ -= last_snapshot.overwrite_put_succs_;
-      delta.get_ -= last_snapshot.get_;
-      delta.get_fails_ -= last_snapshot.get_fails_;
-      delta.get_succs_ -= last_snapshot.get_succs_;
-      delta.exists_ -= last_snapshot.exists_;
-      delta.exists_fails_ -= last_snapshot.exists_fails_;
-      delta.exists_succs_ -= last_snapshot.exists_succs_;
-      delta.del_ -= last_snapshot.del_;
-      delta.del_fails_ -= last_snapshot.del_fails_;
-      delta.del_succs_ -= last_snapshot.del_succs_;
-      delta.mput_ -= last_snapshot.mput_;
-      delta.mput_fails_ -= last_snapshot.mput_fails_;
-      delta.mput_succs_ -= last_snapshot.mput_succs_;
-      delta.mget_ -= last_snapshot.mget_;
-      delta.mget_fails_ -= last_snapshot.mget_fails_;
-      delta.mget_succs_ -= last_snapshot.mget_succs_;
-      delta.data_match_ -= last_snapshot.data_match_;
-      delta.data_mismatch_ -= last_snapshot.data_mismatch_;
-      delta.expected_miss_ -= last_snapshot.expected_miss_;
-      delta.submit_fails_ -= last_snapshot.submit_fails_;
-      delta.put_size_bytes -= last_snapshot.put_size_bytes;
-      delta.get_size_bytes -= last_snapshot.get_size_bytes;
+      auto worker_snapshot = SnapshotPerWorkerStats(workers);
+      ThreadStats delta = DeltaStats(snapshot, last_snapshot);
+      auto worker_delta = DeltaPerWorkerStats(worker_snapshot, last_worker_snapshots);
       last_snapshot = snapshot;
+      last_worker_snapshots = worker_snapshot;
       print_stats(delta, FLAGS_threads, FLAGS_report_interval_inSecs, true);
+      PrintTopThreadStats(worker_delta, FLAGS_report_interval_inSecs, true);
+      std::cout << std::endl;
     }
   });
 
@@ -1085,7 +1349,9 @@ int main(int argc, char **argv) {
 
   auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(steady_clock_t::now() - test_start_ts).count();
   auto final_stats = SnapshotStats(workers);
+  auto final_worker_stats = SnapshotPerWorkerStats(workers);
   print_stats(final_stats, FLAGS_threads, static_cast<uint64_t>(elapsed), false);
+  PrintTopThreadStats(final_worker_stats, static_cast<uint64_t>(elapsed), false);
   if (final_stats.total_ops() == 0) {
     std::cerr << "[simm_stable_test] no operations completed" << std::endl;
     return EIO;

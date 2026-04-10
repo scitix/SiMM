@@ -18,6 +18,7 @@ enum class CommonRpcType {
   RPC_LIST_NODE_REQ,
   RPC_SET_NODE_STATUS_REQ,
   RPC_TRACE_TOGGLE_REQ,
+  RPC_GET_NODE_RESOURCE_REQ,
 
   //.....
 };
@@ -57,7 +58,6 @@ class ListGFlagsHandler : public sicl::rpc::HandlerBase {
                     const std::shared_ptr<sicl::rpc::Connection> conn,
                     const google::protobuf::Message *request) const override;
 };
-
 
 #ifdef SIMM_ENABLE_TRACE
 class TraceToggleHandler : public sicl::rpc::HandlerBase {

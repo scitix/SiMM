@@ -73,7 +73,9 @@ message DataServerResourceRequestPB {
 message DataServerResourceResponsePB {
   proto.common.NodeAddressPB node = 1;
   int64 mem_total_bytes = 2;
-  int64 mem_free_bytes = 3;
+  int64 mem_allocated_bytes = 3;
   int64 mem_used_bytes = 4;
-  repeated DataServerShardMemInfoPB shard_mem_infos = 5;
+  int64 mem_free_bytes = 5;
+  repeated DataServerShardMemInfoPB shard_mem_infos = 6;
+  uint64 last_report_timestamp_us = 7;
 }

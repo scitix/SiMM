@@ -152,6 +152,21 @@ class ListNodesHandler : public sicl::rpc::HandlerBase {
   std::shared_ptr<simm::cm::ClusterManagerNodeManager> node_manager_{nullptr};
 };
 
+class GetNodeResourceHandler : public sicl::rpc::HandlerBase {
+ public:
+  explicit GetNodeResourceHandler(sicl::rpc::SiRPC *service,
+                                  google::protobuf::Message *request,
+                                  std::shared_ptr<simm::cm::ClusterManagerNodeManager> node_manager)
+      : HandlerBase(service, request), node_manager_(node_manager) {}
+
+  virtual void Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
+                    const std::shared_ptr<sicl::rpc::Connection> conn,
+                    const google::protobuf::Message *request) const override;
+
+ private:
+  std::shared_ptr<simm::cm::ClusterManagerNodeManager> node_manager_{nullptr};
+};
+
 class SetNodeStatusHandler : public sicl::rpc::HandlerBase {
  public:
   explicit SetNodeStatusHandler(
