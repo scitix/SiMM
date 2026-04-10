@@ -27,6 +27,7 @@ DECLARE_uint64(memory_limit_bytes);
 DECLARE_uint32(ds_free_memory_usable_ratio);
 DECLARE_uint32(cm_hb_tolerance_count);
 DECLARE_bool(ds_process_exit_cm_disconnection);
+DECLARE_string(ds_logical_node_id);
 
 namespace simm {
 namespace ds {
@@ -63,15 +64,21 @@ class KVServiceTest : public ::testing::Test {
  protected:
   void SetUp() override {
     rpcServicePtr = std::make_unique<KVRpcService>();
+    old_logical_node_id_ = FLAGS_ds_logical_node_id;
+    FLAGS_ds_logical_node_id = "ut-ds-kv-service";
     FLAGS_memory_limit_bytes = 1ULL << 31;
     FLAGS_ds_free_memory_usable_ratio = 100;
     auto ret = rpcServicePtr->Init();
     ASSERT_EQ(ret, CommonErr::OK);
   }
 
-  void TearDown() override { rpcServicePtr.reset(); }
+  void TearDown() override {
+    rpcServicePtr.reset();
+    FLAGS_ds_logical_node_id = old_logical_node_id_;
+  }
 
   std::unique_ptr<KVRpcService> rpcServicePtr;
+  std::string old_logical_node_id_;
 };
 
 class KVServiceLightTest : public ::testing::Test {
@@ -352,6 +359,29 @@ TEST_F(KVServiceTest, TestGetRejectsTooSmallClientBuffer) {
   serverExit.post();
   serverPool->join();
   clientPool->join();
+}
+
+TEST_F(KVServiceTest, TestKVPutLazilyInitializesMissingShardTable) {
+  ASSERT_EQ(rpcServicePtr->Start(), CommonErr::OK);
+  const std::string key = "test_lazy_init_put";
+  const uint32_t shard_id =
+      hashkit::HashkitBase::Instance().generate_16bit_hash_value(key.c_str(), key.length()) % FLAGS_shard_total_num;
+
+  ASSERT_EQ(rpcServicePtr->GetHashTable(shard_id), nullptr);
+
+  auto req = std::make_unique<KVPutRequestPB>();
+  req->set_shard_id(shard_id);
+  req->set_key(key);
+  req->set_val_len(128);
+
+  KVEntryIntrusivePtr entry;
+  auto ret = rpcServicePtr->KVPut(std::make_shared<simm::common::SimmContext>(), req.get(), entry);
+
+  ASSERT_EQ(ret, CommonErr::OK);
+  ASSERT_NE(rpcServicePtr->GetHashTable(shard_id), nullptr);
+  ASSERT_TRUE(entry);
+  rpcServicePtr->KVPutSuccessHooks(entry);
+  ASSERT_EQ(rpcServicePtr->Stop(), CommonErr::OK);
 }
 
 TEST_F(KVServiceLightTest, TestHeartbeatFailureCountResetOnSuccess) {
