@@ -113,6 +113,7 @@ def binary_dir():
         return Path("/dev/null")  # placeholder — cluster.py uses per-host binary_dir
 
     pytest.skip("SiMM binaries not found. Set SIMM_BUILD_DIR or build with ./build.sh")
+    return Path("/dev/null")
 
 
 @pytest.fixture
