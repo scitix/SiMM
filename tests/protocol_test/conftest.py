@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 from framework.cluster import SimmCluster
-from framework.config import ClusterConfig, HostConfig, dict_to_cluster_config, load_yaml
+from framework.config import ClusterConfig, dict_to_cluster_config, load_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -108,10 +108,12 @@ def binary_dir():
         if (d / "cluster_manager").exists():
             return d
 
-    # In multi-machine mode, binaries may only exist on remote hosts
+    # In multi-machine mode, binaries may only exist on remote hosts.
+    # cluster.py uses per-host binary_dir from YAML config, so local path is unused.
     if os.environ.get("SIMM_CLUSTER_CONFIG"):
-        return Path("/dev/null")  # placeholder — cluster.py uses per-host binary_dir
+        return None
 
+    # pytest.skip raises Skipped exception — execution never reaches implicit return
     pytest.skip("SiMM binaries not found. Set SIMM_BUILD_DIR or build with ./build.sh")
 
 
@@ -133,7 +135,7 @@ def cluster_small(tmp_path, binary_dir):
 @pytest.fixture
 def cluster_medium(tmp_path, binary_dir):
     """1 CM + 6 DS cluster."""
-    config = _make_config(num_ds=6, grace_period_sec=8)
+    config = _make_config(num_ds=6, cm_cluster_init_grace_period_inSecs=8)
     cluster = SimmCluster(
         config,
         log_dir=tmp_path / "logs" if not config.cm_host else None,

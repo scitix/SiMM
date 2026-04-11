@@ -204,6 +204,7 @@ class TestDeferredReshardWindowTimeout:
         dist_before = c.observer.get_shard_distribution()
         total_before = sum(dist_before.values())
         ds0_shards_before = dist_before.get(addr, 0)
+        assert ds0_shards_before > 0
 
         c.fault_injector.kill_process(ds0)
 
@@ -235,6 +236,17 @@ class TestDeferredReshardWindowTimeout:
         # Alive nodes absorbed the shards
         c.observer.assert_no_orphaned_shards()
 
+        # Alive nodes gained ds0's shards
+        dist_after = c.observer.get_shard_distribution()
+        for ds in c.data_servers:
+            if ds.index == 0:
+                continue
+            before = dist_before.get(ds.addr_str, 0)
+            after = dist_after.get(ds.addr_str, 0)
+            assert after > before, (
+                f"DS[{ds.index}] should have gained shards: before={before}, after={after}"
+            )
+
     def test_deferred_then_late_replacement_treated_as_new_node(
         self, cluster_deferred_short_window
     ):
@@ -245,6 +257,8 @@ class TestDeferredReshardWindowTimeout:
         logical_id = f"{c.config.ds_logical_node_id_prefix}-0"
 
         dist_before = c.observer.get_shard_distribution()
+        ds0_shards_before = dist_before.get(addr, 0)
+        assert ds0_shards_before > 0
 
         c.fault_injector.kill_process(ds0)
 
@@ -268,6 +282,14 @@ class TestDeferredReshardWindowTimeout:
         )
 
         c.observer.assert_total_shard_count(c.config.shard_total_num)
+
+        # Late DS is treated as new node — it should NOT inherit ds0's original shard count
+        # (reshard already redistributed ds0's shards to other alive nodes)
+        dist_after = c.observer.get_shard_distribution()
+        new_ds_shards = dist_after.get(new_ds.addr_str, 0)
+        assert new_ds_shards != ds0_shards_before or new_ds_shards > 0, (
+            "Late replacement should be treated as new node with fresh shard assignment"
+        )
 
 
 @pytest.mark.requires_rdma
@@ -358,6 +380,49 @@ class TestDeferredReshardEdgeCases:
 
         # Shards unchanged, total correct
         c.observer.assert_total_shard_count(total_before)
+
+    def test_insufficient_nodes_keeps_deferred_state(self, cluster_deferred_short_window):
+        """Kill 2/3 DS → window expires → CM keeps DEFERRED_RESHARD (not DEAD)
+        because only 1 alive node cannot absorb all orphaned shards safely."""
+        c = cluster_deferred_short_window
+        ds0 = c.get_ds_handle(0)
+        ds1 = c.get_ds_handle(1)
+
+        total_before = c.observer.get_total_shard_count()
+
+        # Kill 2 of 3 DS
+        c.fault_injector.kill_multiple([ds0, ds1])
+
+        # Both should enter DEFERRED_RESHARD
+        detect_timeout = c.config.cm_heartbeat_timeout_inSecs + 5
+        c.observer.wait_for_node_status(ds0.addr_str, "DEFERRED_RESHARD", timeout=detect_timeout)
+        c.observer.wait_for_node_status(ds1.addr_str, "DEFERRED_RESHARD", timeout=detect_timeout)
+
+        # Wait for window to expire
+        window_timeout = (
+            c.config.cm_deferred_reshard_window_inSecs
+            + c.config.cm_heartbeat_bg_scan_interval_inSecs
+            + 5
+        )
+        time.sleep(window_timeout)
+
+        # Both should STILL be DEFERRED_RESHARD — not DEAD
+        # CM cannot reshard safely with only 1 alive node
+        status0 = c.observer.get_node_status(ds0.addr_str)
+        status1 = c.observer.get_node_status(ds1.addr_str)
+        assert status0 == "DEFERRED_RESHARD", (
+            f"DS0 should stay DEFERRED_RESHARD with insufficient alive nodes, got {status0}"
+        )
+        assert status1 == "DEFERRED_RESHARD", (
+            f"DS1 should stay DEFERRED_RESHARD with insufficient alive nodes, got {status1}"
+        )
+
+        # Shards should still be assigned (no reshard happened)
+        c.observer.assert_total_shard_count(total_before)
+
+        # Remaining DS should still be RUNNING
+        ds2 = c.get_ds_handle(2)
+        assert c.observer.get_node_status(ds2.addr_str) == "RUNNING"
 
     def test_multiple_ds_down_deferred_reshard(self, cluster_deferred):
         """Kill 2/3 DS → both enter DEFERRED_RESHARD → replace both → all shards recovered."""

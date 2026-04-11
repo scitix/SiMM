@@ -49,6 +49,9 @@ class TestCMRestart:
         # CM side: all nodes RUNNING
         cluster_small.observer.assert_all_nodes_running()
 
+        # Shard routing table fully rebuilt
+        cluster_small.observer.assert_total_shard_count(shard_total_before)
+
     def test_ds_detects_cm_failure_via_status(self, cluster_small):
         """After CM crash, DS admin RPC should show cm_ready=false, failure_count >= tolerance."""
         cluster_small.fault_injector.kill_process(cluster_small.cm)

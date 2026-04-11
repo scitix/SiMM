@@ -5,6 +5,11 @@
 namespace simm {
 namespace common {
 
+// UDS socket base path constants.
+// Socket path = <basePath>.<pid>.sock
+inline constexpr const char* kCmAdminUdsBasePath = "/run/simm/admin_cm";
+inline constexpr const char* kDsAdminUdsBasePath = "/run/simm/admin_ds";
+
 // Shared message types for UDS admin protocol.
 // Used by AdminServer (server side) and simm_ctl_admin (client side).
 // Wire format: [uint32_t frame_len][uint16_t type][payload]

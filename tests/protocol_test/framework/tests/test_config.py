@@ -1,9 +1,6 @@
 """Unit tests for config.py — YAML loading, deep merge, config parsing."""
 
-import textwrap
 from pathlib import Path
-
-import pytest
 
 from framework.config import (
     ClusterConfig,
@@ -232,6 +229,28 @@ class TestDictToFaultConfigs:
         assert len(faults) == 2
         assert faults[0].fault_type == "sigkill"
         assert faults[1].fault_type == "restart_cm"
+
+
+class TestConftestMakeConfig:
+    """Verify conftest._make_config produces valid ClusterConfig."""
+
+    def test_make_config_default(self):
+        # Import from conftest to catch parameter name typos at import time
+        import sys
+        sys.path.insert(0, str(Path(__file__).parents[2]))
+        from conftest import _make_config
+        config = _make_config()
+        assert config.num_data_servers == 3
+        assert config.shard_total_num == 64
+        assert config.cm_cluster_init_grace_period_inSecs == 5
+
+    def test_make_config_medium(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).parents[2]))
+        from conftest import _make_config
+        config = _make_config(num_ds=6, cm_cluster_init_grace_period_inSecs=8)
+        assert config.num_data_servers == 6
+        assert config.cm_cluster_init_grace_period_inSecs == 8
 
 
 class TestClusterConfigProperties:

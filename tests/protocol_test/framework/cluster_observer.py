@@ -1,7 +1,6 @@
 """Cluster state observation, condition waiting, and invariant assertions."""
 
 import logging
-import math
 import time
 
 from .admin_client import AdminClient, AdminClientError, NodeInfo
@@ -33,7 +32,8 @@ class ClusterObserver:
     def _list_nodes(self) -> list[NodeInfo]:
         try:
             return self._admin.list_nodes(self._cm.host, self._cm.pid)
-        except AdminClientError:
+        except AdminClientError as e:
+            logger.debug("list_nodes failed: %s", e)
             return []
 
     def get_alive_node_count(self) -> int:
@@ -57,7 +57,8 @@ class ClusterObserver:
         """Returns {node_addr: shard_count}."""
         try:
             return self._admin.list_shards(self._cm.host, self._cm.pid)
-        except AdminClientError:
+        except AdminClientError as e:
+            logger.debug("list_shards failed: %s", e)
             return {}
 
     def get_total_shard_count(self) -> int:
@@ -222,7 +223,8 @@ class ClusterObserver:
         """
         try:
             return self._admin.get_ds_status(ds_host, ds_pid)
-        except AdminClientError:
+        except AdminClientError as e:
+            logger.debug("get_ds_status failed for pid=%d on %s: %s", ds_pid, ds_host, e)
             return {}
 
     def assert_ds_is_registered(self, ds_host: str, ds_pid: int) -> None:

@@ -16,7 +16,7 @@ SCENARIO_DIR = Path(__file__).parents[1] / "scenarios"
 @pytest.fixture
 def runner(binary_dir, tmp_path):
     return ScenarioRunner(
-        binary_dir=str(binary_dir),
+        binary_dir=str(binary_dir) if binary_dir is not None else None,
         log_dir=str(tmp_path / "logs"),
     )
 

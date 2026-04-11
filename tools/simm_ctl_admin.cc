@@ -45,6 +45,7 @@
 #include "rpc/rpc_context.h"
 #include "transport/types.h"
 
+#include "common/admin/admin_msg_types.h"
 #include "common/errcode/errcode_def.h"
 #include "common/logging/logging.h"
 #include "common/trace/trace_server.h"
@@ -86,18 +87,7 @@ class AdminChannel {
                                        const std::shared_ptr<sicl::rpc::RpcContext> &)> done_cb) = 0;
 };
 
-// Message type for UDS admin channel
-// XXX: Should keep in sync with common/admin/admin_msg_types.h
-enum class AdminMsgType : uint16_t {
-  TRACE_TOGGLE = 1,
-  GFLAG_LIST   = 2,
-  GFLAG_GET    = 3,
-  GFLAG_SET    = 4,
-  DS_STATUS    = 5,
-  CM_STATUS    = 6,
-  NODE_LIST    = 7,
-  SHARD_LIST   = 8,
-};
+using simm::common::AdminMsgType;
 
 // Unix domain socket implementation
 class UdsChannel : public AdminChannel {
@@ -382,9 +372,9 @@ static int resolveProcessPid(const std::string &proc_name) {
 static std::string procToSocketPath(const std::string &proc_name, int pid) {
   std::string base;
   if (proc_name == "cluster_manager") {
-    base = "/run/simm/admin_cm";
+    base = simm::common::kCmAdminUdsBasePath;
   } else if (proc_name == "data_server") {
-    base = "/run/simm/admin_ds";
+    base = simm::common::kDsAdminUdsBasePath;
   } else {
     std::cerr << "Error: unknown process name: " << proc_name
               << ". Expected 'cluster_manager' or 'data_server'\n";
@@ -1256,12 +1246,12 @@ int main(int argc, char *argv[]) {
     }
 
     // Determine UDS socket path from pid and subcommand/proc context
-    auto buildUdsSocketPath = [&](const std::string &base_hint) -> std::string {
+    auto buildUdsSocketPath = [&](const std::string &basePath) -> std::string {
       if (!proc.empty()) {
         return procToSocketPath(proc, pid);
       }
-      // When using --pid, infer from subcommand
-      return "/run/simm/" + base_hint + "." + std::to_string(pid) + ".sock";
+      // When using --pid, infer from subcommand context
+      return basePath + "." + std::to_string(pid) + ".sock";
     };
 
     // Parse subcommand format: "resource_type operation"
@@ -1274,7 +1264,7 @@ int main(int argc, char *argv[]) {
       if (pid != -1) {
         // UDS mode (node list only)
         if (operation == "list") {
-          std::string socket_path = buildUdsSocketPath("admin_cm");
+          std::string socket_path = buildUdsSocketPath(simm::common::kCmAdminUdsBasePath);
           auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::NODE_LIST);
           if (!uds_channel->Init()) {
             std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
@@ -1321,7 +1311,7 @@ int main(int argc, char *argv[]) {
           std::cerr << "Error: cm status requires --pid or --proc\n";
           return 1;
         }
-        std::string socket_path = buildUdsSocketPath("admin_cm");
+        std::string socket_path = buildUdsSocketPath(simm::common::kCmAdminUdsBasePath);
         auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::CM_STATUS);
         if (!uds_channel->Init()) {
           std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
@@ -1343,7 +1333,7 @@ int main(int argc, char *argv[]) {
           std::cerr << "Error: ds status requires --pid or --proc\n";
           return 1;
         }
-        std::string socket_path = buildUdsSocketPath("admin_ds");
+        std::string socket_path = buildUdsSocketPath(simm::common::kDsAdminUdsBasePath);
         auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::DS_STATUS);
         if (!uds_channel->Init()) {
           std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
@@ -1363,7 +1353,7 @@ int main(int argc, char *argv[]) {
       if (operation == "list") {
         if (pid != -1) {
           // UDS mode
-          std::string socket_path = buildUdsSocketPath("admin_cm");
+          std::string socket_path = buildUdsSocketPath(simm::common::kCmAdminUdsBasePath);
           auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::SHARD_LIST);
           if (!uds_channel->Init()) {
             std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";

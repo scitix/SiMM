@@ -148,7 +148,8 @@ class SshExecutor:
         try:
             result = self.run(host, f"kill -0 {pid}", timeout=5, check=False)
             return result.returncode == 0
-        except SshError:
+        except SshError as e:
+            logger.debug("is_process_alive check failed on %s pid=%d: %s", host, pid, e)
             return False
 
     def read_file(self, host: str, path: str) -> str:
@@ -156,7 +157,8 @@ class SshExecutor:
         try:
             result = self.run(host, f"cat {path}", timeout=15, check=False)
             return result.stdout if result.returncode == 0 else ""
-        except SshError:
+        except SshError as e:
+            logger.debug("read_file failed on %s path=%s: %s", host, path, e)
             return ""
 
     def read_file_tail(self, host: str, path: str, offset: int = 0) -> tuple[str, int]:
@@ -181,7 +183,8 @@ class SshExecutor:
                 content = result.stdout
                 new_offset = offset + len(content)
             return content, new_offset
-        except SshError:
+        except SshError as e:
+            logger.debug("read_file_tail failed on %s path=%s: %s", host, path, e)
             return "", offset
 
     def file_exists(self, host: str, path: str) -> bool:
@@ -189,7 +192,8 @@ class SshExecutor:
         try:
             result = self.run(host, f"test -f {path}", timeout=5, check=False)
             return result.returncode == 0
-        except SshError:
+        except SshError as e:
+            logger.debug("file_exists check failed on %s path=%s: %s", host, path, e)
             return False
 
     def find_free_port(self, host: str) -> int | None:
@@ -205,8 +209,8 @@ class SshExecutor:
             port_str = result.stdout.strip()
             if port_str.isdigit():
                 return int(port_str)
-        except (subprocess.CalledProcessError, SshError):
-            pass
+        except (subprocess.CalledProcessError, SshError) as e:
+            logger.debug("find_free_port failed on %s: %s", host, e)
         return None
 
     def run_iptables(self, host: str, args: str) -> bool:
@@ -224,7 +228,8 @@ class SshExecutor:
             result = self.run(host, "echo ok", timeout=self._ssh_config.connect_timeout + 2,
                               check=False)
             return result.returncode == 0 and "ok" in result.stdout
-        except SshError:
+        except SshError as e:
+            logger.debug("check_connectivity failed for %s: %s", host, e)
             return False
 
 
