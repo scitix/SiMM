@@ -203,7 +203,6 @@ class TestDeferredReshardWindowTimeout:
 
         dist_before = c.observer.get_shard_distribution()
         total_before = sum(dist_before.values())
-        ds0_shards_before = dist_before.get(addr, 0)
 
         c.fault_injector.kill_process(ds0)
 
