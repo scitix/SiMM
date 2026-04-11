@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 from framework.cluster import SimmCluster
-from framework.config import ClusterConfig, HostConfig, dict_to_cluster_config, load_yaml
+from framework.config import ClusterConfig, dict_to_cluster_config, load_yaml
 
 logger = logging.getLogger(__name__)
 
