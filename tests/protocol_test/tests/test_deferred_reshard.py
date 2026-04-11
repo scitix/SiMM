@@ -243,8 +243,6 @@ class TestDeferredReshardWindowTimeout:
         addr = ds0.addr_str
         logical_id = f"{c.config.ds_logical_node_id_prefix}-0"
 
-        dist_before = c.observer.get_shard_distribution()
-
         c.fault_injector.kill_process(ds0)
 
         # Wait for DEFERRED_RESHARD then DEAD (window expired)
