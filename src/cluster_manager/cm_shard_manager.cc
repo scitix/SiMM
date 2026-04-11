@@ -218,6 +218,19 @@ error_code_t ClusterManagerShardManager::ReassignOrphanedShards(
   return CommonErr::OK;
 }
 
+std::vector<shard_id_t> ClusterManagerShardManager::GetShardsOwnedByNode(const std::string& ip_port) {
+  std::vector<shard_id_t> result;
+  for (const auto& entry : mShardRoutingTable) {
+    if (entry.second) {
+      std::string node_addr = entry.second->node_ip_ + ":" + std::to_string(entry.second->node_port_);
+      if (node_addr == ip_port) {
+        result.push_back(entry.first);
+      }
+    }
+  }
+  return result;
+}
+
 error_code_t ClusterManagerShardManager::MarkShardsUnavailableForNodes(
     const std::vector<std::string> &target_node_addresses) {
   if (target_node_addresses.empty()) {

@@ -88,6 +88,8 @@ int KVCachePool::init(uint64_t bound_bytes,
     evictor_ = evictor;
     max_memory_block_num_ = bound_bytes / BLOCK_SIZE;
     if (initial_blocks < 0 || (size_t)initial_blocks > max_memory_block_num_) {
+      MLOG_WARN("KVCachePool::init initial_blocks:{} is greater than max_memory_block_num_:{}, set to upper bound",
+                initial_blocks, max_memory_block_num_);
       initial_blocks = max_memory_block_num_;
     }
     cache_memory_bound_bytes_ = max_memory_block_num_ * BLOCK_SIZE;
@@ -124,13 +126,15 @@ int KVCachePool::init(uint64_t bound_bytes,
         return -1;
       }
     }
-    // init chunks
-    for (size_t i = 0; i < CHUNKS_PER_BLOCK; i++) {
-      size_t slab_idx = i % SlabClassCount;
-      auto sc = all_slabs[slab_idx];
-      bool res = init_chunk(0, i, sc);
-      if (!res) {
-        MLOG_ERROR("Init cache chunk failed, res:{}", res);
+    // init chunks for the first block
+    if (max_memory_block_num_ != 1) {
+      for (size_t i = 0; i < CHUNKS_PER_BLOCK; i++) {
+        size_t slab_idx = i % SlabClassCount;
+        auto sc = all_slabs[slab_idx];
+        bool res = init_chunk(0, i, sc);
+        if (!res) {
+          MLOG_ERROR("Init cache chunk failed, res:{}", res);
+        }
       }
     }
 
@@ -244,7 +248,8 @@ int KVCachePool::init(uint64_t bound_bytes,
                 // clean empty chunk which cooldowns for specific period
                 if (first_check) {
                   auto curr_tag = utils::current_microseconds();
-                  for (size_t block_idx = 1; block_idx < max_memory_block_num_; block_idx++) {
+                  size_t start_block_idx = (max_memory_block_num_ == 1) ? 0 : 1;
+                  for (size_t block_idx = start_block_idx; block_idx < max_memory_block_num_; block_idx++) {
                     for (size_t chunk_idx = 0; chunk_idx < CHUNKS_PER_BLOCK; chunk_idx++) {
                       auto assign_cnt = chunk_assign_cnt_[block_idx][chunk_idx].load(std::memory_order_acquire);
                       if (assign_cnt == 0) {

@@ -38,7 +38,15 @@ class ClusterManagerHBMonitor : public std::enable_shared_from_this<ClusterManag
   error_code_t Start();
   error_code_t Stop();
 
+  // Legacy: heartbeat keyed by ip:port (backward compat for old DS without logical_node_id)
   error_code_t OnRecvNodeHeartbeat(const std::string &node_addr_str);
+
+  // heartbeat keyed by logical_node_id + ip:port
+  error_code_t OnRecvNodeHeartbeat(const std::string &logical_node_id, const std::string &ip_port);
+
+  // Called when a DEFERRED_RESHARD is successfully resolved (new DS registered).
+  // Resets stale heartbeat records so the new DS starts fresh.
+  void OnDeferredReshardResolved(const std::string &logical_node_id);
 
  private:
   void BgHBScanLoop();
@@ -47,7 +55,7 @@ class ClusterManagerHBMonitor : public std::enable_shared_from_this<ClusterManag
 
  private:
   // record all dataservers' heartbeat timestamps
-  // key : ds address string(ip:port)
+  // key : logical_node_id (preferred) or ds address string(ip:port) for legacy
   // val : deque of latest N(default is 100) heartbeat timestamps
   using InnerUOMap = std::unordered_map<std::string, std::deque<simm::common::NodeHeartbeatTs>>;
   folly::Synchronized<InnerUOMap> ds_hb_records_;

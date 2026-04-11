@@ -16,6 +16,7 @@
 #include "proto/ds_cm_rpcs.pb.h"
 
 DECLARE_uint32(shard_total_num);
+DECLARE_bool(cm_deferred_reshard_enabled);
 
 DECLARE_LOG_MODULE("cluster_manager");
 
@@ -33,6 +34,30 @@ DECLARE_LOG_MODULE("cluster_manager");
 
 namespace simm {
 namespace cm {
+
+static inline void FillNodeInfoHelper(const std::string &addr_str,
+                                      NodeStatus status,
+                                      const std::shared_ptr<simm::common::NodeResource> &resource,
+                                      NodeInfoPB *node_info) {
+  auto node_addr = simm::common::NodeAddress::ParseFromString(addr_str);
+  if (!node_addr) {
+    return;
+  }
+
+  auto *addr_pb = node_info->mutable_node_address();
+  addr_pb->set_ip(node_addr->node_ip_);
+  addr_pb->set_port(node_addr->node_port_);
+  node_info->set_node_status(static_cast<int32_t>(status));
+
+  if (resource) {
+    auto *res_pb = node_info->mutable_resource();
+    res_pb->set_mem_free_bytes(resource->mem_free_bytes_);
+    res_pb->set_mem_total_bytes(resource->mem_total_bytes_);
+    res_pb->set_mem_used_bytes(resource->mem_used_bytes_);
+    res_pb->set_mem_allocated_bytes(resource->mem_allocated_bytes_);
+    res_pb->set_last_report_timestamp_us(resource->last_report_timestamp_us_);
+  }
+}
 
 template <typename T>
 static inline void FillRespWithRoutingTableEntryHelper(const simm::cm::QueryResultMap &resmap, T *respb) {
@@ -77,23 +102,84 @@ void NewNodeHandshakeHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> 
   auto req = dynamic_cast<const NewNodeHandShakeRequestPB *>(request);
   auto resp = std::make_shared<NewNodeHandShakeResponsePB>();
   simm::common::NodeAddress node_addr = {req->node().ip(), req->node().port()};
+  std::string addr_str = node_addr.toString();
+  const std::string &logical_id = req->logical_node_id();
   error_code_t ret = CommonErr::OK;
-  if (simm::common::ModuleServiceState::GetInstance().GracePeriodFinished()) {
-    MLOG_INFO("Grace period is already finished, new dataserver({}) will be waited for joining the cluster",
-              node_addr.toString());
-    // already out of grace period, new dataserver nodes will be hold for
-    // one timewindow, and be added in batch after current timewindow finishes
+
+  if (!logical_id.empty() && simm::common::ModuleServiceState::GetInstance().GracePeriodFinished()) {
+    // Post-grace-period with logical_node_id: process handshake via node manager
+    std::vector<shard_id_t> reported_shards(req->shard_ids().begin(), req->shard_ids().end());
+    auto result = node_manager_->ProcessHandshake(logical_id, addr_str, reported_shards);
+
+    switch (result.action) {
+      case HandshakeResult::Action::DEFERRED_RESHARD_REPLACE: {
+        // Replacement scenario: collect shards from old IP, assign to new IP
+        auto shards = shard_manager_->GetShardsOwnedByNode(result.old_ip_port);
+        shard_manager_->BatchAssignRoutingTable(shards, std::make_shared<simm::common::NodeAddress>(node_addr));
+        hb_monitor_->OnDeferredReshardResolved(logical_id);
+        result.shards_to_assign = std::move(shards);
+        MLOG_INFO("Node handshake replace complete: {} -> {} for {} shards",
+                  result.old_ip_port,
+                  addr_str,
+                  result.shards_to_assign.size());
+        break;
+      }
+      case HandshakeResult::Action::IP_UPDATE: {
+        // IP changed while RUNNING: update routing table entries to new IP
+        auto shards = shard_manager_->GetShardsOwnedByNode(result.old_ip_port);
+        shard_manager_->BatchAssignRoutingTable(shards, std::make_shared<simm::common::NodeAddress>(node_addr));
+        hb_monitor_->OnDeferredReshardResolved(logical_id);
+        result.shards_to_assign = std::move(shards);
+        MLOG_INFO("Node handshake IP update: {} -> {} for {} shards",
+                  result.old_ip_port,
+                  addr_str,
+                  result.shards_to_assign.size());
+        break;
+      }
+      case HandshakeResult::Action::NEW_NODE: {
+        // Post-grace-period scale-out: a brand-new logical_node_id not seen before.
+        // Shard assignment for scale-out is not yet supported; no shards assigned here.
+        // TODO: implement scale-out shard assignment
+        MLOG_WARN("New node registered post-grace-period (scale-out not yet supported): logical_id={} ip={}",
+                  logical_id,
+                  addr_str);
+        break;
+      }
+      default:
+        ret = CommonErr::CmRegisterNewNodeFailed;
+        break;
+    }
+
+    // Fill assigned_shard_ids in response
+    for (auto sid : result.shards_to_assign) {
+      resp->add_assigned_shard_ids(sid);
+    }
+
+  } else if (simm::common::ModuleServiceState::GetInstance().GracePeriodFinished()) {
+    MLOG_INFO("Grace period is already finished, new dataserver({}) will be waited for joining the cluster", addr_str);
+    // Post-grace-period without logical_node_id: legacy behavior
   } else {
-    // still in grace period, just add nodes
-    // FIXME(ytji): needn't to use NodeAddress as intermediary struct
-    MLOG_INFO("Still in Grace period new dataserver({}) will be added into cluster", node_addr.toString());
-    ret = node_manager_->AddNode(node_addr.toString());
-    shard_manager_->BatchAssignRoutingTable(std::vector<shard_id_t>(req->shard_ids().begin(), req->shard_ids().end()),
-                                            std::make_shared<simm::common::NodeAddress>(node_addr));
+    // Still in grace period: register node and assign shards
+    MLOG_INFO("Still in Grace period new dataserver({}) will be added into cluster", addr_str);
+    std::vector<shard_id_t> reported_shards(req->shard_ids().begin(), req->shard_ids().end());
+    shard_manager_->BatchAssignRoutingTable(reported_shards, std::make_shared<simm::common::NodeAddress>(node_addr));
+
+    if (!logical_id.empty()) {
+      // ProcessHandshake (Case 1) calls AddNode internally, so no separate AddNode needed.
+      node_manager_->ProcessHandshake(logical_id, addr_str, reported_shards);
+    } else {
+      // No logical_node_id: legacy registration path (no deferred reshard support)
+      ret = node_manager_->AddNode(addr_str);
+    }
+
+    // Fill assigned_shard_ids in response (echo back what was assigned)
+    for (auto sid : reported_shards) {
+      resp->add_assigned_shard_ids(sid);
+    }
   }
 
   if (ret != CommonErr::OK) {
-    MLOG_ERROR("Failed to register new node({}) into cluster, ret:{}", node_addr.toString(), ret);
+    MLOG_ERROR("Failed to register new node({}) into cluster, ret:{}", addr_str, ret);
   }
   resp->set_ret_code(ret);
   simm::common::Metrics::Instance("cluster_manager")
@@ -116,9 +202,16 @@ void NodeHeartBeatHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx
   auto resp = std::make_shared<DataServerHeartBeatResponsePB>();
   error_code_t ret = CommonErr::OK;
   std::string addr_str = req->node().ip() + ":" + std::to_string(req->node().port());
+  const std::string &logical_id = req->logical_node_id();
 
   if (simm::utils::IsValidV4IPAddr(req->node().ip()) && simm::utils::IsValidPortNum(req->node().port())) {
-    ret = hb_monitor_->OnRecvNodeHeartbeat(addr_str);
+    if (!logical_id.empty()) {
+      // heartbeat keyed by logical_node_id
+      ret = hb_monitor_->OnRecvNodeHeartbeat(logical_id, addr_str);
+    } else {
+      // Legacy: heartbeat keyed by ip:port
+      ret = hb_monitor_->OnRecvNodeHeartbeat(addr_str);
+    }
   } else {
     MLOG_WARN("NodeHeartBeatHandler::Work, invalid node address received:{}", addr_str);
     ret = CommonErr::InvalidArgument;
@@ -338,31 +431,9 @@ void ListNodesHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
 
   // Build response with node info (address, status, resource)
   for (const auto &[addr_str, status] : node_stat_list) {
-    // Parse address string (ip:port format)
-    auto node_addr = simm::common::NodeAddress::ParseFromString(addr_str);
-    if (!node_addr) {
-      MLOG_ERROR("Failed to parse node address string({})", addr_str);
-      continue;
-    }
-
     auto *node_info = resp->add_nodes();
-
-    // Set node address
-    auto *addr_pb = node_info->mutable_node_address();
-    addr_pb->set_ip(node_addr->node_ip_);
-    addr_pb->set_port(node_addr->node_port_);
-
-    // Set node status
-    node_info->set_node_status(static_cast<int32_t>(status));
-
-    // Set node resource if available
     auto res_it = res_map.find(addr_str);
-    if (res_it != res_map.end() && res_it->second) {
-      auto *res_pb = node_info->mutable_resource();
-      res_pb->set_mem_free_bytes(res_it->second->mem_free_bytes_);
-      res_pb->set_mem_total_bytes(res_it->second->mem_total_bytes_);
-      res_pb->set_mem_used_bytes(res_it->second->mem_used_bytes_);
-    }
+    FillNodeInfoHelper(addr_str, status, res_it != res_map.end() ? res_it->second : nullptr, node_info);
   }
 
   resp->set_ret_code(CommonErr::OK);
@@ -372,6 +443,74 @@ void ListNodesHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
                                                       std::chrono::steady_clock::now() - req_begin_ts)
                                                       .count()));
   simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("list_nodes");
+  SEND_RESPONSE(ctx, resp);
+}
+
+void GetNodeResourceHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
+                                  const std::shared_ptr<sicl::rpc::Connection> conn,
+                                  const google::protobuf::Message *request) const {
+  auto req_begin_ts = std::chrono::steady_clock::now();
+  auto req = dynamic_cast<const GetNodeResourceRequestPB *>(request);
+  auto resp = std::make_shared<GetNodeResourceResponsePB>();
+  const std::string addr_str = req->node().ip() + ":" + std::to_string(req->node().port());
+
+  if (FOLLY_UNLIKELY(!simm::common::ModuleServiceState::GetInstance().IsServiceReady())) {
+    resp->set_ret_code(CmErr::InitInGracePeriod);
+    simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("get_node_resource");
+    simm::common::Metrics::Instance("cluster_manager")
+        .ObserveRequestDuration("get_node_resource",
+                                static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                        std::chrono::steady_clock::now() - req_begin_ts)
+                                                        .count()));
+    simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("get_node_resource");
+    SEND_RESPONSE(ctx, resp);
+    return;
+  }
+
+  if (!node_manager_->QueryNodeExists(addr_str)) {
+    resp->set_ret_code(CommonErr::TargetNotFound);
+    simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("get_node_resource");
+    simm::common::Metrics::Instance("cluster_manager")
+        .ObserveRequestDuration("get_node_resource",
+                                static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                        std::chrono::steady_clock::now() - req_begin_ts)
+                                                        .count()));
+    simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("get_node_resource");
+    SEND_RESPONSE(ctx, resp);
+    return;
+  }
+
+  auto resource = node_manager_->GetNodeResource(addr_str);
+  if (!resource) {
+    resource = node_manager_->RefreshNodeResource(addr_str);
+  }
+  if (!resource) {
+    resp->set_ret_code(CommonErr::TargetUnavailable);
+    simm::common::Metrics::Instance("cluster_manager").IncErrorsTotal("get_node_resource");
+    simm::common::Metrics::Instance("cluster_manager")
+        .ObserveRequestDuration("get_node_resource",
+                                static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                        std::chrono::steady_clock::now() - req_begin_ts)
+                                                        .count()));
+    simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("get_node_resource");
+    SEND_RESPONSE(ctx, resp);
+    return;
+  }
+
+  FillNodeInfoHelper(addr_str, node_manager_->QueryNodeStatus(addr_str), resource, resp->mutable_node());
+  for (const auto &shard_resource : resource->shard_mem_infos_) {
+    auto *shard_pb = resp->add_shard_resources();
+    shard_pb->set_shard_id(shard_resource.shard_id_);
+    shard_pb->set_mem_used_bytes(shard_resource.mem_used_bytes_);
+  }
+
+  resp->set_ret_code(CommonErr::OK);
+  simm::common::Metrics::Instance("cluster_manager")
+      .ObserveRequestDuration("get_node_resource",
+                              static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                      std::chrono::steady_clock::now() - req_begin_ts)
+                                                      .count()));
+  simm::common::Metrics::Instance("cluster_manager").IncRequestsTotal("get_node_resource");
   SEND_RESPONSE(ctx, resp);
 }
 

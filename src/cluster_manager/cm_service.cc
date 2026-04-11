@@ -66,9 +66,7 @@ error_code_t ClusterManagerService::Start() {
     hb_monitor_->Start();
 
     // start dataservers resource query background thread
-    // FIXME(ytji): for v0930 version, background thread(to query resource stats from ds) in
-    // node manager module is not actived yet, so just comment init action
-    // node_manager_->Init();
+    node_manager_->Init();
 
     MLOG_INFO("ClusterManager service starts successfully!");
   } else {
@@ -97,9 +95,7 @@ error_code_t ClusterManagerService::Stop() {
     // shard manager stop?
 
     // stop node manager background thread
-    // FIXME(ytji): for v0930 version, background thread(to query resource stats from ds) in
-    // node manager module is not actived yet, so just comment stop action
-    // node_manager_->Stop();
+    node_manager_->Stop();
 
     MLOG_INFO("Cluster Manager service stopped successfully...");
   } else {
@@ -147,18 +143,10 @@ error_code_t ClusterManagerService::StartRPCServices() {
   inter_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_NEW_NODE_HANDSHAKE),
       new NewNodeHandshakeHandler(
-          inter_rpc_service_.get(), new NewNodeHandShakeRequestPB, node_manager_, shard_manager_));
+          inter_rpc_service_.get(), new NewNodeHandShakeRequestPB, node_manager_, shard_manager_, hb_monitor_));
   inter_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_NODE_HEARTBEAT),
       new NodeHeartBeatHandler(inter_rpc_service_.get(), new DataServerHeartBeatRequestPB, hb_monitor_));
-  inter_rpc_service_->RegisterHandler(
-      static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_DATASERVER_RESOURCE_QUERY),
-      new DataServerResourceReportHandler(inter_rpc_service_.get(), new DataServerShardMemInfoPB));
-  // TODO(ytji): will activate after v0930 version
-  // inter_rpc_service_->RegisterHandler(static_cast<sicl::rpc::ReqType>(
-  //     simm::cm::ClusterManagerRpcType::RPC_ROUTING_TABLE_UPDATE),
-  //     new RoutingTableUpdateHandler(inter_rpc_service_.get(), new
-  //     RoutingTableUpdateRequestPB));
   inter_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::cm::ClusterManagerRpcType::RPC_ROUTING_TABLE_QUERY_SINGLE),
       new RoutingTableQuerySingleHandler(
@@ -189,6 +177,9 @@ error_code_t ClusterManagerService::StartRPCServices() {
   admin_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_NODE_REQ),
       new ListNodesHandler(admin_rpc_service_.get(), new ListNodesRequestPB, node_manager_));
+  admin_rpc_service_->RegisterHandler(
+      static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_GET_NODE_RESOURCE_REQ),
+      new GetNodeResourceHandler(admin_rpc_service_.get(), new GetNodeResourceRequestPB, node_manager_));
   admin_rpc_service_->RegisterHandler(
       static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_SET_NODE_STATUS_REQ),
       new SetNodeStatusHandler(admin_rpc_service_.get(), new SetNodeStatusRequestPB, node_manager_));

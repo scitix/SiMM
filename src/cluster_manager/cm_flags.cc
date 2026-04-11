@@ -26,6 +26,16 @@ DEFINE_uint32(cm_heartbeat_timeout_inSecs,
               "Timeout strategy : dataserver heartbeat timeout in seconds,"
               "if no heartbeat received in this time, the dataserver will be considered to mark as dead");
 
+// Deferred Reshard related flags
+DEFINE_bool(cm_deferred_reshard_enabled,
+            true,
+            "Enable Deferred Reshard: when a DS heartbeat times out, CM waits for a replacement DS "
+            "with the same logical_node_id before triggering reshard");
+DEFINE_uint32(cm_deferred_reshard_window_inSecs,
+              120,
+              "Deferred Reshard window in seconds: if no replacement DS registers within this window, "
+              "CM falls back to standard reshard");
+
 // Node Manager related flags
 DEFINE_uint32(dataserver_resource_interval_inSecs,
               60,

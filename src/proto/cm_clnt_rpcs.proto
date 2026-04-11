@@ -46,6 +46,13 @@ message NodeResourcePB {
   int64 mem_free_bytes = 1;
   int64 mem_total_bytes = 2;
   int64 mem_used_bytes = 3;
+  int64 mem_allocated_bytes = 4;
+  uint64 last_report_timestamp_us = 5;
+}
+
+message ShardResourcePB {
+  uint32 shard_id = 1;
+  int64 mem_used_bytes = 2;
 }
 
 // Node Status Information
@@ -64,6 +71,18 @@ message ListNodesRequestPB {
 message ListNodesResponsePB {
   sint32 ret_code = 1;
   repeated NodeInfoPB nodes = 2;
+}
+
+// Clnt -> CM
+message GetNodeResourceRequestPB {
+  proto.common.NodeAddressPB node = 1;
+}
+
+// CM -> Clnt
+message GetNodeResourceResponsePB {
+  sint32 ret_code = 1;
+  NodeInfoPB node = 2;
+  repeated ShardResourcePB shard_resources = 3;
 }
 
 // ********** Set Node Status RPCS **********

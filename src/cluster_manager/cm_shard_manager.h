@@ -72,6 +72,9 @@ class ClusterManagerShardManager : public std::enable_shared_from_this<ClusterMa
   error_code_t ReassignOrphanedShards(const std::vector<shard_id_t> &orphaned_shards,
                                       const std::vector<std::shared_ptr<simm::common::NodeAddress>> &alive_servers);
 
+  // Get all shards currently owned by a specific node (identified by ip:port)
+  std::vector<shard_id_t> GetShardsOwnedByNode(const std::string& ip_port);
+
   // Mark shards routed to target nodes as unavailable (nullptr).
   error_code_t MarkShardsUnavailableForNodes(const std::vector<std::string> &target_node_addresses);
 

@@ -28,27 +28,8 @@ DECLARE_string(ds_log_file);
 DECLARE_LOG_MODULE("data_server");
 
 static std::atomic<bool> quitPorcess{false};
-static void (*prevSigIntHandler)(int) = nullptr;
-static void (*prevSigTermHandler)(int) = nullptr;
-static void (*prevSigSegvHandler)(int) = nullptr;
 
 void signalHandler(int signal) {
-  // Call previous handler if exists
-  switch (signal) {
-    case SIGINT:
-      if (prevSigIntHandler)
-        prevSigIntHandler(signal);
-      break;
-    case SIGTERM:
-      if (prevSigTermHandler)
-        prevSigTermHandler(signal);
-      break;
-    case SIGSEGV:
-      if (prevSigSegvHandler)
-        prevSigSegvHandler(signal);
-      break;
-  }
-
   // Our own handling logic
   switch (signal) {
     case SIGINT:
@@ -59,7 +40,9 @@ void signalHandler(int signal) {
       break;
     case SIGSEGV:
       MLOG_CRITICAL("SIGSEGV received. Trigger codedump and exit...");
-      abort();  // trigger coredump
+      std::signal(SIGSEGV, SIG_DFL);
+      std::raise(SIGSEGV);
+      std::_Exit(EXIT_FAILURE);
       break;
     default:
       MLOG_WARN("Unknown signal {} received. Exiting gracefully...", signal);
@@ -103,11 +86,16 @@ int main(int argc, char *argv[]) {
 
   // Register signal handlers and save previous ones
   MLOG_INFO("Register signal handers...");
-  prevSigIntHandler = std::signal(SIGINT, signalHandler);
-  prevSigTermHandler = std::signal(SIGTERM, signalHandler);
-  prevSigSegvHandler = std::signal(SIGSEGV, signalHandler);
+  std::signal(SIGINT, signalHandler);
+  std::signal(SIGTERM, signalHandler);
+  std::signal(SIGSEGV, signalHandler);
 
   std::unique_ptr<simm::ds::KVRpcService> server = std::make_unique<simm::ds::KVRpcService>();
+  server->SetClusterDisconnectHandler([server_ptr = server.get()]() {
+    MLOG_CRITICAL("Cluster manager disconnected repeatedly, request clean data server shutdown");
+    server_ptr->Stop();
+    quitPorcess.store(true);
+  });
   error_code_t rc;
   rc = server->Init();
   if (rc != CommonErr::OK) {

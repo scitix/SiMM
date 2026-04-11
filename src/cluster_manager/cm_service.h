@@ -81,6 +81,7 @@ class ClusterManagerService {
   FRIEND_TEST(ClusterManagerServiceTest, TestQueryRoutingTableRejectsRequestsDuringGracePeriod);
   FRIEND_TEST(ClusterManagerServiceTest, TestQueryRoutingTableReturnsIncompleteWhenShardUnavailable);
   FRIEND_TEST(ClusterManagerServiceTest, TestNodeRejoinRPC);
+  FRIEND_TEST(ClusterManagerServiceTest, TestListNodesAndGetNodeResourceAdminRPCs);
 #endif
 };
 

@@ -16,6 +16,7 @@ namespace common {
 #define FOREACH_NODESTATUS(C) \
   C(UNKNOWN)                  \
   C(RUNNING)                  \
+  C(DEFERRED_RESHARD)         \
   C(DEAD)
 
 #define NODESTATUS_ENUM(name) name,
@@ -72,12 +73,36 @@ struct NodeAddress {
 
 struct NodeResource {
   NodeResource() {}
-  NodeResource(int64_t mem_total_bytes, int64_t mem_free_bytes, int64_t mem_used_bytes)
-      : mem_free_bytes_(mem_free_bytes), mem_total_bytes_(mem_total_bytes), mem_used_bytes_(mem_used_bytes) {}
+  struct ShardMemResource {
+    shard_id_t shard_id_{0};
+    int64_t mem_used_bytes_{0};
+  };
+
+  NodeResource(int64_t mem_total_bytes, int64_t mem_allocated_bytes, int64_t mem_used_bytes, int64_t mem_free_bytes)
+      : mem_free_bytes_(mem_free_bytes),
+        mem_total_bytes_(mem_total_bytes),
+        mem_allocated_bytes_(mem_allocated_bytes),
+        mem_used_bytes_(mem_used_bytes) {}
+
+  NodeResource(int64_t mem_total_bytes,
+               int64_t mem_allocated_bytes,
+               int64_t mem_used_bytes,
+               int64_t mem_free_bytes,
+               uint64_t last_report_timestamp_us,
+               std::vector<ShardMemResource> shard_mem_infos)
+      : mem_free_bytes_(mem_free_bytes),
+        mem_total_bytes_(mem_total_bytes),
+        mem_allocated_bytes_(mem_allocated_bytes),
+        mem_used_bytes_(mem_used_bytes),
+        last_report_timestamp_us_(last_report_timestamp_us),
+        shard_mem_infos_(std::move(shard_mem_infos)) {}
 
   int64_t mem_free_bytes_{0};
   int64_t mem_total_bytes_{0};
+  int64_t mem_allocated_bytes_{0};
   int64_t mem_used_bytes_{0};
+  uint64_t last_report_timestamp_us_{0};
+  std::vector<ShardMemResource> shard_mem_infos_;
 };
 
 // timestmap info of node heatbeat

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <optional>
@@ -12,6 +13,7 @@
 #include "rpc/connection.h"
 #include "rpc/rpc.h"
 
+#include "cm_rpc_handler.h"
 #include "common/logging/logging.h"
 #include "common/utils/time_util.h"
 #include "cm_node_manager.h"
@@ -19,8 +21,11 @@
 DECLARE_string(dataserver_namespace);
 DECLARE_string(dataserver_svc_name);
 DECLARE_string(dataserver_port_name);
+DECLARE_int32(mgt_service_port);
 DECLARE_uint32(rpc_timeout_inSecs);
 DECLARE_uint32(dataserver_resource_interval_inSecs);
+DECLARE_bool(cm_deferred_reshard_enabled);
+DECLARE_uint32(cm_deferred_reshard_window_inSecs);
 
 DECLARE_LOG_MODULE("cluster_manager");
 
@@ -35,6 +40,7 @@ ClusterManagerNodeManager::ClusterManagerNodeManager() {
 
 ClusterManagerNodeManager::~ClusterManagerNodeManager() {
   MLOG_INFO("Start destruct Node Manager");
+  Stop();
   if (rpc_client_ != nullptr) {
     delete rpc_client_;
     rpc_client_ = nullptr;
@@ -42,6 +48,9 @@ ClusterManagerNodeManager::~ClusterManagerNodeManager() {
 }
 
 void ClusterManagerNodeManager::Init() {
+  if (resource_thread_ != nullptr) {
+    return;
+  }
   start_timestamp_us_ = simm::utils::current_microseconds();
   resource_thread_stop_.store(false);
 
@@ -50,7 +59,8 @@ void ClusterManagerNodeManager::Init() {
   std::function<void()> resource_loop = [self]() {
     while (!self->resource_thread_stop_.load()) {
       self->updateAllNodeResource();
-      self->resource_thread_baton_.timed_wait(std::chrono::milliseconds(FLAGS_dataserver_resource_interval_inSecs * 1000));
+      self->resource_thread_baton_.timed_wait(
+          std::chrono::milliseconds(FLAGS_dataserver_resource_interval_inSecs * 1000));
       self->resource_thread_baton_.reset();
     }
   };
@@ -65,6 +75,12 @@ void ClusterManagerNodeManager::Stop() {
   if (resource_thread_ != nullptr && resource_thread_->joinable()) {
     resource_thread_->join();
   }
+  {
+    std::lock_guard<std::mutex> lock(resource_conn_mutex_);
+    resource_conn_map_.clear();
+  }
+  delete resource_thread_;
+  resource_thread_ = nullptr;
   MLOG_INFO("Delete resource query thread in Node Manager succeed");
 }
 
@@ -86,11 +102,7 @@ std::vector<std::shared_ptr<simm::common::NodeAddress>> ClusterManagerNodeManage
 }
 
 error_code_t ClusterManagerNodeManager::AddNode(const std::string & addr_str) {
-  auto result = node_status_map_.insert_or_assign(addr_str, NodeStatus::RUNNING);
-  if (!result.second) {
-    MLOG_ERROR("Add node {} in Node Manager status map failed", addr_str);
-    return CmErr::NodeManagerAddNodeFailed;
-  }
+  node_status_map_.insert_or_assign(addr_str, NodeStatus::RUNNING);
 
   // FIXME(ytji): for test, just comment below codes
   // // get node resource info, only print log if error
@@ -108,6 +120,10 @@ error_code_t ClusterManagerNodeManager::AddNode(const std::string & addr_str) {
 error_code_t ClusterManagerNodeManager::DelNode(const std::string & addr_str) {
   node_info_map_.erase(addr_str);
   node_status_map_.erase(addr_str);
+  {
+    std::lock_guard<std::mutex> lock(resource_conn_mutex_);
+    resource_conn_map_.erase(addr_str);
+  }
   MLOG_DEBUG("Delete node {} in Node Manager succeed", addr_str);
   return CommonErr::OK;
 }
@@ -120,8 +136,13 @@ error_code_t ClusterManagerNodeManager::UpdateNodeStatus(const std::string & add
 
 std::shared_ptr<simm::common::NodeResource> ClusterManagerNodeManager::getNodeResource(
     const std::string & addr_str) {
+#if defined(SIMM_UNIT_TEST)
+  if (test_resource_query_hook_) {
+    return test_resource_query_hook_(addr_str);
+  }
+#endif
   DataServerResourceRequestPB req;
-  auto resp = new DataServerResourceResponsePB;
+  auto resp = std::make_unique<DataServerResourceResponsePB>();
   sicl::rpc::RpcContext *ctx_p;
   sicl::rpc::RpcContext::newInstance(ctx_p);
   std::shared_ptr<sicl::rpc::RpcContext> ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
@@ -132,16 +153,54 @@ std::shared_ptr<simm::common::NodeResource> ClusterManagerNodeManager::getNodeRe
     return nullptr;
   }
 
-  rpc_client_->SendRequest(ds_addr->node_ip_, ds_addr->node_port_, static_cast<sicl::rpc::ReqType>(0), req, resp, ctx, nullptr);
+  std::shared_ptr<sicl::rpc::Connection> conn;
+  {
+    std::lock_guard<std::mutex> lock(resource_conn_mutex_);
+    auto it = resource_conn_map_.find(addr_str);
+    if (it != resource_conn_map_.end()) {
+      conn = it->second;
+    }
+  }
+  if (!conn) {
+    conn = rpc_client_->connect(ds_addr->node_ip_, FLAGS_mgt_service_port);
+    if (!conn) {
+      MLOG_ERROR("Get node {} resource failed, connect failed to management port {}", addr_str, FLAGS_mgt_service_port);
+      return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(resource_conn_mutex_);
+    resource_conn_map_[addr_str] = conn;
+  }
+
+  ctx->set_timeout(sicl::transport::TimerTick::TIMER_3S);
+  rpc_client_->SendRequest(conn,
+                           static_cast<sicl::rpc::ReqType>(cm::ClusterManagerRpcType::RPC_DATASERVER_RESOURCE_QUERY),
+                           req,
+                           resp.get(),
+                           ctx);
   if (ctx->Failed()) {
     std::string errmsg = ctx->ErrorText();
+    std::lock_guard<std::mutex> lock(resource_conn_mutex_);
+    resource_conn_map_.erase(addr_str);
     MLOG_ERROR("Get node {} resource failed, err:{}", addr_str, errmsg);
     return nullptr;
   }
 
+  std::vector<simm::common::NodeResource::ShardMemResource> shard_mem_infos;
+  shard_mem_infos.reserve(resp->shard_mem_infos_size());
+  for (const auto &shard_pb : resp->shard_mem_infos()) {
+    shard_mem_infos.push_back(
+        {static_cast<shard_id_t>(shard_pb.shard_id()), static_cast<int64_t>(shard_pb.shard_mem_used_bytes())});
+  }
+  std::sort(shard_mem_infos.begin(), shard_mem_infos.end(), [](const auto &lhs, const auto &rhs) {
+    return lhs.shard_id_ < rhs.shard_id_;
+  });
+
   auto resource = std::make_shared<simm::common::NodeResource>(static_cast<int64_t>(resp->mem_total_bytes()),
+                                                               static_cast<int64_t>(resp->mem_allocated_bytes()),
+                                                               static_cast<int64_t>(resp->mem_used_bytes()),
                                                                static_cast<int64_t>(resp->mem_free_bytes()),
-                                                               static_cast<int64_t>(resp->mem_used_bytes()));
+                                                               resp->last_report_timestamp_us(),
+                                                               std::move(shard_mem_infos));
 
   MLOG_DEBUG("Get node {} resource info in Node Manager succeed", addr_str);
   return resource;
@@ -189,6 +248,15 @@ std::shared_ptr<simm::common::NodeResource> ClusterManagerNodeManager::GetNodeRe
   return it->second;
 }
 
+std::shared_ptr<simm::common::NodeResource> ClusterManagerNodeManager::RefreshNodeResource(
+    const std::string &addr_str) {
+  auto resource_ret = getNodeResource(addr_str);
+  if (resource_ret != nullptr) {
+    node_info_map_.insert_or_assign(addr_str, resource_ret);
+  }
+  return resource_ret;
+}
+
 std::unordered_map<std::string, NodeStatus> ClusterManagerNodeManager::GetAllNodeStatus() {
   std::unordered_map<std::string, NodeStatus> status_map;
   for (auto &pair : node_status_map_) {
@@ -204,6 +272,158 @@ std::unordered_map<std::string, std::shared_ptr<simm::common::NodeResource>>
     resource_map[pair.first] = pair.second;
   }
   return resource_map;
+}
+
+// logical_node_id based methods
+
+void ClusterManagerNodeManager::migrateNodeIp(const std::string& logical_id,
+                                               NodeEntry& entry,
+                                               const std::string& new_ip_port) {
+  addr_to_logical_.erase(entry.current_ip_port);
+  addr_to_logical_.insert_or_assign(new_ip_port, logical_id);
+  node_status_map_.erase(entry.current_ip_port);
+  node_info_map_.erase(entry.current_ip_port);
+  AddNode(new_ip_port);
+  entry.current_ip_port = new_ip_port;
+}
+
+HandshakeResult ClusterManagerNodeManager::ProcessHandshake(
+    const std::string& logical_id,
+    const std::string& new_ip_port,
+    const std::vector<shard_id_t>& reported_shards) {
+  HandshakeResult result;
+
+  auto it = logical_node_table_.find(logical_id);
+  if (it == logical_node_table_.end()) {
+    // Case 1: logical_id not seen before → new node registration
+    NodeEntry entry;
+    entry.logical_node_id = logical_id;
+    entry.current_ip_port = new_ip_port;
+    entry.status = NodeStatus::RUNNING;
+    logical_node_table_.insert_or_assign(logical_id, entry);
+    addr_to_logical_.insert_or_assign(new_ip_port, logical_id);
+
+    // Also register in legacy ip:port maps
+    AddNode(new_ip_port);
+
+    result.action = HandshakeResult::Action::NEW_NODE;
+    result.shards_to_assign = reported_shards;
+    MLOG_INFO("New node registered: logical_id={} ip={}", logical_id, new_ip_port);
+    return result;
+  }
+
+  // ConcurrentHashMap iterators yield const refs — copy, mutate, assign back
+  NodeEntry entry = it->second;
+
+  switch (entry.status) {
+    case NodeStatus::DEFERRED_RESHARD: {
+      // Case 2: replacement DS registered while waiting — in-place IP update
+      result.action = HandshakeResult::Action::DEFERRED_RESHARD_REPLACE;
+      result.old_ip_port = entry.current_ip_port;
+      migrateNodeIp(logical_id, entry, new_ip_port);
+      entry.status = NodeStatus::RUNNING;
+      entry.deferred_reshard_since = {};
+      logical_node_table_.assign(logical_id, entry);
+      MLOG_INFO("Node replacement: logical_id={} old_ip={} new_ip={}", logical_id, result.old_ip_port, new_ip_port);
+      return result;
+    }
+
+    case NodeStatus::RUNNING: {
+      result.action = HandshakeResult::Action::IP_UPDATE;
+      result.old_ip_port = entry.current_ip_port;
+      if (entry.current_ip_port == new_ip_port) {
+        // Case 3: DS restarted before HB timeout, same IP. Treat as IP_UPDATE so the
+        // handler looks up shards via GetShardsOwnedByNode and returns them to the DS.
+        // BatchAssignRoutingTable with same addr is a no-op on the routing table.
+        MLOG_INFO("Node re-registration (fast restart): logical_id={} ip={}", logical_id, new_ip_port);
+      } else {
+        // Case 4: IP changed while still RUNNING (rare IP drift)
+        migrateNodeIp(logical_id, entry, new_ip_port);
+        logical_node_table_.assign(logical_id, entry);
+        MLOG_INFO("Node IP update: logical_id={} old_ip={} new_ip={}", logical_id, result.old_ip_port, new_ip_port);
+      }
+      return result;
+    }
+
+    case NodeStatus::DEAD:
+    default: {
+      // Case 5: node was DEAD (reshard already happened), treat as new
+      migrateNodeIp(logical_id, entry, new_ip_port);
+      entry.status = NodeStatus::RUNNING;
+      entry.deferred_reshard_since = {};
+      logical_node_table_.assign(logical_id, entry);
+      result.action = HandshakeResult::Action::NEW_NODE;
+      result.shards_to_assign = reported_shards;
+      MLOG_INFO("Node rejoin after DEAD: logical_id={} ip={}", logical_id, new_ip_port);
+      return result;
+    }
+  }
+}
+
+std::optional<NodeEntry> ClusterManagerNodeManager::GetNodeEntry(const std::string& logical_id) const {
+  auto it = logical_node_table_.find(logical_id);
+  if (it == logical_node_table_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+error_code_t ClusterManagerNodeManager::OnHeartbeat(const std::string& logical_id,
+                                                     const std::string& ip_port) {
+  auto it = logical_node_table_.find(logical_id);
+  if (it != logical_node_table_.end()) {
+    auto entry = it->second;
+    if (entry.current_ip_port != ip_port) {
+      migrateNodeIp(logical_id, entry, ip_port);
+      logical_node_table_.assign(logical_id, entry);
+    }
+  }
+  return CommonErr::OK;
+}
+
+error_code_t ClusterManagerNodeManager::SetNodeStatus(
+    const std::string& logical_id,
+    NodeStatus status,
+    std::chrono::steady_clock::time_point ts,
+    std::optional<NodeStatus> expected_status) {
+  auto it = logical_node_table_.find(logical_id);
+  if (it == logical_node_table_.end()) {
+    MLOG_WARN("SetNodeStatus: logical_id={} not found", logical_id);
+    return CommonErr::TargetNotFound;
+  }
+
+  auto entry = it->second;
+
+  // Compare-and-set: if caller specified an expected status, abort if it no
+  // longer matches (e.g. ProcessHandshake already moved the node back to RUNNING).
+  if (expected_status.has_value() && entry.status != expected_status.value()) {
+    MLOG_WARN("SetNodeStatus: logical_id={} status mismatch (expected={} actual={}), skipping",
+              logical_id,
+              common::NodeStatusToString(expected_status.value()),
+              common::NodeStatusToString(entry.status));
+    return CommonErr::OK;
+  }
+
+  entry.status = status;
+  if (status == NodeStatus::DEFERRED_RESHARD) {
+    entry.deferred_reshard_since = ts;
+  }
+  logical_node_table_.assign(logical_id, entry);
+
+  // Keep legacy map in sync
+  UpdateNodeStatus(entry.current_ip_port, status);
+
+  MLOG_INFO("SetNodeStatus: logical_id={} ip={} status={}",
+            logical_id, entry.current_ip_port, common::NodeStatusToString(status));
+  return CommonErr::OK;
+}
+
+std::string ClusterManagerNodeManager::ResolveLogicalId(const std::string& ip_port) const {
+  auto it = addr_to_logical_.find(ip_port);
+  if (it == addr_to_logical_.end()) {
+    return "";
+  }
+  return it->second;
 }
 
 }  // namespace cm

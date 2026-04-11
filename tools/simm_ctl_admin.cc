@@ -19,11 +19,13 @@
 
 #include <errno.h>
 #include <sys/socket.h>
-#include <sys/un.h> 
+#include <sys/un.h>
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <iostream>
 #include <latch>
 #include <memory>
@@ -47,6 +49,7 @@
 #include "common/logging/logging.h"
 #include "common/trace/trace_server.h"
 #include "common/rpc_handlers/common_rpc_handlers.h"
+#include "common/utils/time_util.h"
 #include "common/utils/tabulate.hpp"
 #include "proto/cm_clnt_rpcs.pb.h"
 #include "proto/common.pb.h"
@@ -54,6 +57,18 @@
 namespace po = boost::program_options;
 
 enum class ResourceType { Node, Shard, GFlag };
+
+static std::string FormatTimestampSeconds(uint64_t timestamp_us) {
+  if (timestamp_us == 0) {
+    return "-";
+  }
+
+  const auto secs = static_cast<std::time_t>(timestamp_us / 1000000ULL);
+  std::tm local_tm = *std::localtime(&secs);
+  char time_buf[64];
+  std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d_%H:%M:%S %Z", &local_tm);
+  return std::string(time_buf);
+}
 
 // Low-level channel interface
 class AdminChannel {
@@ -87,9 +102,7 @@ enum class AdminMsgType : uint16_t {
 // Unix domain socket implementation
 class UdsChannel : public AdminChannel {
  public:
-  explicit UdsChannel(std::string path,
-                      AdminMsgType type)
-      : path_(std::move(path)), type_(type), fd_(-1) {}
+  explicit UdsChannel(std::string path, AdminMsgType type) : path_(std::move(path)), type_(type), fd_(-1) {}
   ~UdsChannel() override {
     if (fd_ >= 0) {
       ::close(fd_);
@@ -110,8 +123,7 @@ class UdsChannel : public AdminChannel {
     std::strncpy(addr.sun_path, path_.c_str(), sizeof(addr.sun_path) - 1);
     addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
 
-    socklen_t addr_len = static_cast<socklen_t>(
-        offsetof(sockaddr_un, sun_path) + std::strlen(addr.sun_path));
+    socklen_t addr_len = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + std::strlen(addr.sun_path));
 
     if (::connect(fd_, reinterpret_cast<sockaddr *>(&addr), addr_len) < 0) {
       std::cerr << "trace uds: failed to connect to " << path_ << "\n";
@@ -189,8 +201,8 @@ class UdsChannel : public AdminChannel {
  public:
   bool Call(const google::protobuf::Message &req,
             google::protobuf::Message *resp,
-            std::function<void(const google::protobuf::Message *,
-                               const std::shared_ptr<sicl::rpc::RpcContext> &)> done_cb) override {
+            std::function<void(const google::protobuf::Message *, const std::shared_ptr<sicl::rpc::RpcContext> &)>
+                done_cb) override {
     // Extended framing: [uint32_t len][uint16_t type][payload]
     std::string buf;
     if (!req.SerializeToString(&buf)) {
@@ -281,34 +293,29 @@ class RpcChannel : public AdminChannel {
              sicl::rpc::ReqType req_type,
              std::shared_ptr<sicl::rpc::RpcContext> ctx,
              std::unique_ptr<sicl::rpc::SiRPC> client)
-      : ip_(std::move(ip)),
-        port_(port),
-        req_type_(req_type),
-        ctx_(std::move(ctx)),
-        client_(std::move(client)) {}
+      : ip_(std::move(ip)), port_(port), req_type_(req_type), ctx_(std::move(ctx)), client_(std::move(client)) {}
 
   bool Init() override { return client_ != nullptr; }
 
   bool Call(const google::protobuf::Message &req,
             google::protobuf::Message *resp,
-            std::function<void(const google::protobuf::Message *,
-                               const std::shared_ptr<sicl::rpc::RpcContext> &)> done_cb) override {
+            std::function<void(const google::protobuf::Message *, const std::shared_ptr<sicl::rpc::RpcContext> &)>
+                done_cb) override {
     if (!client_) {
       return false;
     }
     google::protobuf::Message *resp_ptr = resp;
     client_->SendRequest(ip_,
-                         port_,
-                         req_type_,
-                         req,
-                         resp_ptr,
-                         ctx_,
-                         [done_cb](const google::protobuf::Message *rsp,
-                                   const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
-                           if (done_cb) {
-                             done_cb(rsp, ctx);
-                           }
-                         });
+        port_,
+        req_type_,
+        req,
+        resp_ptr,
+        ctx_,
+        [done_cb](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+          if (done_cb) {
+            done_cb(rsp, ctx);
+          }
+        });
     return true;
   }
 
@@ -398,7 +405,7 @@ static void CallbackNode(const std::string &operation,
   std::shared_ptr<sicl::rpc::RpcContext> ctx_shared;
   InitRpcClientAndContext(rpc_client, ctx_shared);
 
-  if (operation == "list") {
+  if (operation == "list" || operation == "summary") {
     ListNodesRequestPB req;
     auto resp = new ListNodesResponsePB();
     auto done_cb = [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
@@ -407,12 +414,80 @@ static void CallbackNode(const std::string &operation,
       } else {
         auto *response = dynamic_cast<const ListNodesResponsePB *>(rsp);
         if (response->ret_code() == CommonErr::OK) {
+          uint64_t cluster_total_bytes = 0;
+          uint64_t cluster_allocated_bytes = 0;
+          uint64_t cluster_free_bytes = 0;
+          uint64_t cluster_used_bytes = 0;
+          uint64_t running_nodes = 0;
+          uint64_t dead_nodes = 0;
+
+          for (int i = 0; i < response->nodes_size(); ++i) {
+            const auto &node_info = response->nodes(i);
+            cluster_total_bytes += static_cast<uint64_t>(node_info.resource().mem_total_bytes());
+            cluster_allocated_bytes += static_cast<uint64_t>(node_info.resource().mem_allocated_bytes());
+            cluster_free_bytes += static_cast<uint64_t>(node_info.resource().mem_free_bytes());
+            cluster_used_bytes += static_cast<uint64_t>(node_info.resource().mem_used_bytes());
+            if (node_info.node_status() == static_cast<int32_t>(simm::common::NodeStatus::RUNNING)) {
+              running_nodes++;
+            } else {
+              dead_nodes++;
+            }
+          }
+
+          if (operation == "summary") {
+            tabulate::Table cluster_tbl;
+            cluster_tbl.add_row(
+                {"Nodes", "Running", "Dead", "Total Memory (MB)", "Allocated Memory (MB)", "Used Memory (MB)",
+                 "Free Memory (MB)"});
+            cluster_tbl.add_row({std::to_string(response->nodes_size()),
+                                 std::to_string(running_nodes),
+                                 std::to_string(dead_nodes),
+                                 std::to_string(cluster_total_bytes / (1024 * 1024)),
+                                 std::to_string(cluster_allocated_bytes / (1024 * 1024)),
+                                 std::to_string(cluster_used_bytes / (1024 * 1024)),
+                                 std::to_string(cluster_free_bytes / (1024 * 1024))});
+            cluster_tbl.row(0).format().font_style({tabulate::FontStyle::bold});
+            std::cout << cluster_tbl << "\n";
+
+            tabulate::Table node_tbl;
+            node_tbl.add_row(
+                {"Node Address", "Status", "Total Memory (MB)", "Allocated Memory (MB)", "Used Memory (MB)",
+                 "Free Memory (MB)"})
+                .format()
+                .width(20);
+            for (int i = 0; i < response->nodes_size(); ++i) {
+              const auto &node_info = response->nodes(i);
+              const auto &node_addr = node_info.node_address();
+              std::string addr_str = node_addr.ip() + ":" + std::to_string(node_addr.port());
+              std::string_view status_str =
+                  simm::common::NodeStatusToString(static_cast<simm::common::NodeStatus>(node_info.node_status()));
+              node_tbl.add_row({addr_str,
+                                std::string(status_str),
+                                std::to_string(node_info.resource().mem_total_bytes() / (1024 * 1024)),
+                                std::to_string(node_info.resource().mem_allocated_bytes() / (1024 * 1024)),
+                                std::to_string(node_info.resource().mem_used_bytes() / (1024 * 1024)),
+                                std::to_string(node_info.resource().mem_free_bytes() / (1024 * 1024))});
+            }
+            node_tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
+            node_tbl.column(1).format().width(12);
+            node_tbl.column(2).format().width(18);
+            node_tbl.column(3).format().width(18);
+            node_tbl.column(4).format().width(18);
+            node_tbl.column(5).format().width(18);
+            node_tbl.row(0).format().font_style({tabulate::FontStyle::bold});
+            std::cout << node_tbl << std::endl;
+            delete static_cast<const ListNodesResponsePB *>(rsp);
+            done_latch.count_down();
+            return;
+          }
+
           tabulate::Table tbl;
           tbl.format().locale("C");
 
           if (verbose) {
             // Verbose mode: show detailed information
-            tbl.add_row({"Node Address", "Status", "Total Memory (MB)", "Free Memory (MB)", "Used Memory (MB)"})
+            tbl.add_row({"Node Address", "Status", "Total Memory (MB)", "Allocated Memory (MB)", "Used Memory (MB)",
+                         "Free Memory (MB)"})
                 .format()
                 .width(20);
 
@@ -427,10 +502,11 @@ static void CallbackNode(const std::string &operation,
 
               // Convert memory bytes to MB
               std::string total_mem = std::to_string(node_info.resource().mem_total_bytes() / (1024 * 1024));
-              std::string free_mem = std::to_string(node_info.resource().mem_free_bytes() / (1024 * 1024));
+              std::string allocated_mem = std::to_string(node_info.resource().mem_allocated_bytes() / (1024 * 1024));
               std::string used_mem = std::to_string(node_info.resource().mem_used_bytes() / (1024 * 1024));
+              std::string free_mem = std::to_string(node_info.resource().mem_free_bytes() / (1024 * 1024));
 
-              tbl.add_row({addr_str, status_str, total_mem, free_mem, used_mem});
+              tbl.add_row({addr_str, status_str, total_mem, allocated_mem, used_mem, free_mem});
             }
 
             tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
@@ -438,6 +514,7 @@ static void CallbackNode(const std::string &operation,
             tbl.column(2).format().width(18);
             tbl.column(3).format().width(18);
             tbl.column(4).format().width(18);
+            tbl.column(5).format().width(18);
             tbl.row(0).format().font_style({tabulate::FontStyle::bold});
           } else {
             // Normal mode: show simple information
@@ -464,12 +541,85 @@ static void CallbackNode(const std::string &operation,
           std::cerr << "Error: ListNodes RPC failed with ret_code: " << response->ret_code() << "\n";
         }
       }
-      delete resp;
+      delete static_cast<const ListNodesResponsePB *>(rsp);
       done_latch.count_down();
     };
     rpc_client->SendRequest(ip,
                             port,
                             static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_NODE_REQ),
+                            req,
+                            resp,
+                            ctx_shared,
+                            done_cb);
+  } else if (operation == "stat") {
+    size_t colon_pos = name.find(':');
+    if (colon_pos == std::string::npos) {
+      std::cerr << "Invalid node address format. Expected IP:PORT but got: " << name << "\n";
+      exit(1);
+    }
+
+    GetNodeResourceRequestPB req;
+    req.mutable_node()->set_ip(name.substr(0, colon_pos));
+    req.mutable_node()->set_port(std::stoi(name.substr(colon_pos + 1)));
+
+    auto done_cb = [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
+      if (ctx->Failed()) {
+        std::cerr << "Error: RPC failed, err: " << ctx->ErrorText() << "\n";
+      } else {
+        auto *response = dynamic_cast<const GetNodeResourceResponsePB *>(rsp);
+        if (!response || response->ret_code() != CommonErr::OK) {
+          std::cerr << "Error: GetNodeResource RPC failed with ret_code: " << (response ? response->ret_code() : -1)
+                    << "\n";
+        } else {
+          tabulate::Table summary;
+          summary.add_row({"Node Address",
+                           "Status",
+                           "Total Memory (MB)",
+                           "Allocated Memory (MB)",
+                           "Used Memory (MB)",
+                           "Free Memory (MB)",
+                           "Last Report"});
+          const auto &node_info = response->node();
+          const auto &node_addr = node_info.node_address();
+          std::string last_report = FormatTimestampSeconds(node_info.resource().last_report_timestamp_us());
+          summary.add_row({node_addr.ip() + ":" + std::to_string(node_addr.port()),
+                           std::string(simm::common::NodeStatusToString(
+                               static_cast<simm::common::NodeStatus>(node_info.node_status()))),
+                           std::to_string(node_info.resource().mem_total_bytes() / (1024 * 1024)),
+                           std::to_string(node_info.resource().mem_allocated_bytes() / (1024 * 1024)),
+                           std::to_string(node_info.resource().mem_used_bytes() / (1024 * 1024)),
+                           std::to_string(node_info.resource().mem_free_bytes() / (1024 * 1024)),
+                           last_report});
+          summary.row(0).format().font_style({tabulate::FontStyle::bold});
+          std::cout << summary << "\n";
+
+          tabulate::Table shards;
+          shards.add_row({"Shard ID", "Used Memory (MB)"});
+          int shown = 0;
+          for (int i = 0; i < response->shard_resources_size(); ++i) {
+            const auto &shard = response->shard_resources(i);
+            if (!verbose && shard.mem_used_bytes() == 0) {
+              continue;
+            }
+            shards.add_row({std::to_string(shard.shard_id()), std::to_string(shard.mem_used_bytes() / (1024 * 1024))});
+            shown++;
+          }
+          shards.row(0).format().font_style({tabulate::FontStyle::bold});
+          if (shown > 0) {
+            std::cout << shards << std::endl;
+          } else {
+            std::cout << "(no shard memory usage to display; use --verbose to show zero-usage shards)\n";
+          }
+        }
+      }
+      delete static_cast<const GetNodeResourceResponsePB *>(rsp);
+      done_latch.count_down();
+    };
+
+    auto resp = new GetNodeResourceResponsePB();
+    rpc_client->SendRequest(ip,
+                            port,
+                            static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_GET_NODE_RESOURCE_REQ),
                             req,
                             resp,
                             ctx_shared,
@@ -880,10 +1030,10 @@ static void CallbackShardByUds(AdminChannel &channel, bool verbose) {
 }
 
 static void CallbackGFlag(AdminChannel &channel,
-                              const std::string &operation,
-                              const std::string &name,
-                              const std::string &value,
-                              bool verbose) {
+                          const std::string &operation,
+                          const std::string &name,
+                          const std::string &value,
+                          bool verbose) {
   std::latch done_latch(1);
 
   if (operation == "list") {
@@ -891,10 +1041,7 @@ static void CallbackGFlag(AdminChannel &channel,
     proto::common::ListAllGFlagsRequestPB req;
 
     if (!channel.Call(
-            req,
-            resp,
-            [&](const google::protobuf::Message *rsp,
-                const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+            req, resp, [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
               const auto *response = dynamic_cast<const proto::common::ListAllGFlagsResponsePB *>(rsp);
               if (ctx && ctx->Failed()) {
                 LOG_ERROR("RPC failed, err:{}", ctx->ErrorText());
@@ -905,11 +1052,8 @@ static void CallbackGFlag(AdminChannel &channel,
                   tbl.add_row({"Flag Name", "VALUE", "Default Value", "TYPE", "Description"}).format().width(15);
                   for (int i = 0; i < response->flags_size(); ++i) {
                     const auto &f = response->flags(i);
-                    tbl.add_row({f.flag_name(),
-                                 f.flag_value(),
-                                 f.flag_default_value(),
-                                 f.flag_type(),
-                                 f.flag_description()});
+                    tbl.add_row(
+                        {f.flag_name(), f.flag_value(), f.flag_default_value(), f.flag_type(), f.flag_description()});
                   }
                   tbl.column(0).format().width(30).font_style({tabulate::FontStyle::bold});
                   tbl.column(4).format().width(30);
@@ -923,8 +1067,7 @@ static void CallbackGFlag(AdminChannel &channel,
                 }
                 std::cout << tbl << std::endl;
               } else {
-                LOG_ERROR("ListAllGFlagsResponsePB not ok, ret_code:{}",
-                          response ? response->ret_code() : -1);
+                LOG_ERROR("ListAllGFlagsResponsePB not ok, ret_code:{}", response ? response->ret_code() : -1);
                 std::cerr << "Error: ListGFlags RPC failed" << std::endl;
               }
               done_latch.count_down();
@@ -940,10 +1083,7 @@ static void CallbackGFlag(AdminChannel &channel,
     req.set_flag_name(name);
 
     if (!channel.Call(
-            req,
-            resp,
-            [&](const google::protobuf::Message *rsp,
-                const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+            req, resp, [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
               const auto *response = dynamic_cast<const proto::common::GetGFlagValueResponsePB *>(rsp);
               if (ctx && ctx->Failed()) {
                 LOG_ERROR("RPC failed, err:{}", ctx->ErrorText());
@@ -962,8 +1102,7 @@ static void CallbackGFlag(AdminChannel &channel,
                 tbl.column(1).format().width(50);
                 std::cout << tbl << std::endl;
               } else {
-                LOG_ERROR("GetGFlagValueResponsePB not ok, ret_code:{}",
-                          response ? response->ret_code() : -1);
+                LOG_ERROR("GetGFlagValueResponsePB not ok, ret_code:{}", response ? response->ret_code() : -1);
                 std::cerr << "Error: GetGFlagValue RPC failed" << std::endl;
               }
               done_latch.count_down();
@@ -980,10 +1119,7 @@ static void CallbackGFlag(AdminChannel &channel,
     req.set_flag_value(value);
 
     if (!channel.Call(
-            req,
-            resp,
-            [&](const google::protobuf::Message *rsp,
-                const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+            req, resp, [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
               const auto *response = dynamic_cast<const proto::common::SetGFlagValueResponsePB *>(rsp);
               if (ctx && ctx->Failed()) {
                 LOG_ERROR("RPC failed, err:{}", ctx->ErrorText());
@@ -996,8 +1132,7 @@ static void CallbackGFlag(AdminChannel &channel,
                 tbl.column(1).format().width(50);
                 std::cout << tbl << std::endl;
               } else {
-                LOG_ERROR("SetGFlagValueResponsePB not ok, ret_code:{}",
-                          response ? response->ret_code() : -1);
+                LOG_ERROR("SetGFlagValueResponsePB not ok, ret_code:{}", response ? response->ret_code() : -1);
                 std::cerr << "Error: SetGFlagValue RPC failed" << std::endl;
               }
               done_latch.count_down();
@@ -1015,9 +1150,7 @@ static void CallbackGFlag(AdminChannel &channel,
   done_latch.wait();
 }
 
-static void CallbackTrace(AdminChannel &channel,
-                               const std::string &value,
-                               bool verbose) {
+static void CallbackTrace(AdminChannel &channel, const std::string &value, bool verbose) {
   (void)verbose;
 
   proto::common::TraceToggleRequestPB req;
@@ -1025,21 +1158,18 @@ static void CallbackTrace(AdminChannel &channel,
   req.set_enable_trace(value == "1");
 
   std::latch done_latch(1);
-  if (!channel.Call(req,
-                    resp,
-                    [&](const google::protobuf::Message *rsp,
-                        const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
-              const auto *response = dynamic_cast<const proto::common::TraceToggleResponsePB *>(rsp);
-              if (ctx && ctx->Failed()) {
-                LOG_ERROR("RPC failed, err:{}", ctx->ErrorText());
-              } else if (!response || response->ret_code() != CommonErr::OK) {
-                LOG_ERROR("SetGFlagValueResponsePB not ok, ret_code:{}",
-                          response ? response->ret_code() : -1);
-                std::cerr << "Error: SetGFlagValue RPC failed" << std::endl;
-              }
-              done_latch.count_down();
-              delete resp;
-            })) {
+  if (!channel.Call(
+          req, resp, [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+            const auto *response = dynamic_cast<const proto::common::TraceToggleResponsePB *>(rsp);
+            if (ctx && ctx->Failed()) {
+              LOG_ERROR("RPC failed, err:{}", ctx->ErrorText());
+            } else if (!response || response->ret_code() != CommonErr::OK) {
+              LOG_ERROR("SetGFlagValueResponsePB not ok, ret_code:{}", response ? response->ret_code() : -1);
+              std::cerr << "Error: SetGFlagValue RPC failed" << std::endl;
+            }
+            done_latch.count_down();
+            delete resp;
+          })) {
     std::cerr << "trace: channel.Call() failed" << std::endl;
     delete resp;
     return;
@@ -1086,6 +1216,8 @@ int main(int argc, char *argv[]) {
       std::cout << "OPTIONS:\n" << desc << "\n";
       std::cout << "SUBCOMMANDS:\n"
                 << "  node list [OPTIONS]           List all nodes\n"
+                << "  node summary [OPTIONS]        Show cluster-wide node resource summary\n"
+                << "  node stat <IP:PORT>           Show detailed resource stats for one node\n"
                 << "  node set <IP:PORT> <STATUS>   Set node status (0=DEAD, 1=RUNNING)\n"
                 << "  cm status                     Query CM internal status via UDS\n"
                 << "  ds status                     Query DS internal status via UDS\n"
@@ -1135,7 +1267,7 @@ int main(int argc, char *argv[]) {
     // Parse subcommand format: "resource_type operation"
     if (subcommand == "node") {
       if (args.empty()) {
-        std::cerr << "Error: node subcommand requires an operation (list or set)\n";
+        std::cerr << "Error: node subcommand requires an operation (list, summary, stat or set)\n";
         return 1;
       }
       operation = args[0];
@@ -1154,9 +1286,17 @@ int main(int argc, char *argv[]) {
           return 1;
         }
       } else {
-        // RPC mode (original code)
+        // RPC mode
         if (operation == "list") {
           CallbackNode("list", "", "", ip, port, verbose);
+        } else if (operation == "summary") {
+          CallbackNode("summary", "", "", ip, port, verbose);
+        } else if (operation == "stat") {
+          if (args.size() < 2) {
+            std::cerr << "Error: node stat requires argument: <IP:PORT>\n";
+            return 1;
+          }
+          CallbackNode("stat", args[1], "", ip, port, verbose);
         } else if (operation == "set") {
           if (args.size() < 3) {
             std::cerr << "Error: node set requires arguments: <IP:PORT> <STATUS>\n";
@@ -1238,7 +1378,7 @@ int main(int argc, char *argv[]) {
         std::cerr << "Error: Unknown shard operation: " << operation << "\n";
         return 1;
       }
-    } else if(subcommand == "gflag" || subcommand == "trace"){
+    } else if (subcommand == "gflag" || subcommand == "trace") {
       std::unique_ptr<AdminChannel> channel_ptr{nullptr};
       operation = args[0];
       if (pid == -1) {
@@ -1311,7 +1451,7 @@ int main(int argc, char *argv[]) {
           }
           std::string flag_name = args[1];
           CallbackGFlag(*channel_ptr, "get", flag_name, "", verbose);
-        } else if (operation == "set"){  // set
+        } else if (operation == "set") {  // set
           if (args.size() < 3) {
             std::cerr << "Error: gflag set requires arguments: <NAME> <VALUE>\n";
             return 1;

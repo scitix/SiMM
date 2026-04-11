@@ -60,11 +60,8 @@ KVRpcService::~KVRpcService() {
     keepalive_thread_->join();
     keepalive_thread_.reset();
   }
-  (void)io_service_.reset();
-  (void)mgmt_client_.reset();
-  (void)mgt_service_.reset();
-  (void)admin_rpc_service_.reset();
-  (void)object_pool_.release();  // static variable cannot be deleted
+  // cache_pool_ relies on the mempool owned by io_service_, so release cache-related
+  // objects before destroying the RPC services.
   cache_pool_.reset();
   cache_evictor_.reset();
   for (auto [_, table] : all_tables_) {
@@ -72,6 +69,17 @@ KVRpcService::~KVRpcService() {
       delete table;
   }
   all_tables_.clear();
+  (void)mgmt_client_.reset();
+  (void)mgt_service_.reset();
+  (void)admin_rpc_service_.reset();
+  (void)io_service_.reset();
+  (void)object_pool_.release();  // static variable cannot be deleted
+}
+
+void KVRpcService::SetClusterDisconnectHandler(std::function<void()> handler) {
+  if (handler) {
+    cluster_disconnect_handler_ = std::move(handler);
+  }
 }
 
 error_code_t KVRpcService::Init() {
@@ -108,6 +116,7 @@ error_code_t KVRpcService::Init() {
     cache_pool_ = std::make_unique<KVCachePool>();
     cache_evictor_ = std::make_unique<KVCacheEvictor>(this);
     uint64_t system_level_free_memory = FLAGS_memory_limit_bytes;
+    uint64_t cache_bound_bytes = system_level_free_memory;
     if (system_level_free_memory == 0) {
       auto result = utils::GetMemoryFreeToUse();
       if (result < 0) {
@@ -116,7 +125,7 @@ error_code_t KVRpcService::Init() {
       }
       system_level_free_memory = static_cast<uint64_t>(result);
     }
-    auto cache_bound_bytes = system_level_free_memory * FLAGS_ds_free_memory_usable_ratio / 100;
+    cache_bound_bytes = cache_bound_bytes == 0 ? (system_level_free_memory * FLAGS_ds_free_memory_usable_ratio / 100) : cache_bound_bytes;
     int ret =
         cache_pool_->init(cache_bound_bytes, io_service->GetMempool(), cache_evictor_.get(), FLAGS_ds_initial_blocks);
     if (ret) {
@@ -130,6 +139,7 @@ error_code_t KVRpcService::Init() {
       shard_used_bytes_[i].store(0, std::memory_order_relaxed);
     }
     SetCMAddressFromK8S();
+    InitLogicalNodeId();
     initialized_ = true;
   }
   return CommonErr::OK;  // Success
@@ -166,8 +176,13 @@ error_code_t KVRpcService::Stop() {
     return CommonErr::OK;  // Already stopped
   }
   is_registered_ = true;
+  cm_ready_ = true;
   register_condv_.post();
   is_running_ = false;
+  {
+    std::unique_lock<std::mutex> heartbeat_lock(heartbeat_mutex_);
+    heartbeat_condv_.notify_all();
+  }
   StopRPCServices();
   return CommonErr::OK;
 }
@@ -299,14 +314,46 @@ void KVRpcService::SetCMAddressFromK8S() {
   gflags::SetCommandLineOption("cm_primary_node_port", std::to_string(cm_addr->node_port_).c_str());
 }
 
+void KVRpcService::InitLogicalNodeId() {
+  const char* pod_name = std::getenv("POD_NAME");
+  if (pod_name && std::strlen(pod_name) > 0) {
+    // K8s scenario: build "namespace/pod-name" for global uniqueness across namespaces.
+    // POD_NAMESPACE is injected via the downward API alongside POD_NAME.
+    // If POD_NAMESPACE is absent (unusual misconfiguration), fall back to bare pod-name
+    // with a warning — uniqueness is only guaranteed within a single namespace in that case.
+    const char* pod_namespace = std::getenv("POD_NAMESPACE");
+    if (pod_namespace && std::strlen(pod_namespace) > 0) {
+      logical_node_id_ = std::string(pod_namespace) + "/" + pod_name;
+    } else {
+      MLOG_WARN("POD_NAMESPACE env var not set; logical_node_id will be bare pod-name '{}'. "
+                "Uniqueness is only guaranteed within a single namespace.",
+                pod_name);
+      logical_node_id_ = pod_name;
+    }
+  } else if (!FLAGS_ds_logical_node_id.empty()) {
+    logical_node_id_ = FLAGS_ds_logical_node_id;  // Non-K8s: manual flag
+  } else {
+    // No logical_node_id available: fail fast so that K8s restarts the pod with
+    // the correct environment (POD_NAME injected via downward API).
+    // Falling back to ip:port is intentionally NOT done: if the DS later restarts
+    // with POD_NAME set, the logical_id changes, the CM cannot match the old entry
+    // in DEFERRED_RESHARD state, and client IO will fail for the entire deferred
+    // window before a fallback reshard is triggered.
+    MLOG_CRITICAL("DS logical_node_id not set: neither POD_NAME env var nor "
+                  "--ds_logical_node_id flag is provided. Aborting.");
+    std::abort();
+  }
+  MLOG_INFO("DS logical_node_id: {}", logical_node_id_);
+}
+
 void KVRpcService::KeepAlive() {
-  while (true) {
-    while (!is_registered_) {
+  while (is_running_) {
+    while (is_running_ && !is_registered_) {
       RegisterOnCluster();
       register_condv_.try_wait_for(std::chrono::seconds(FLAGS_register_cooldown_sec));
       register_condv_.reset();  // folly::Bation should be reset before reuse
     }
-    while (!cm_ready_) {
+    while (is_running_ && !cm_ready_) {
       register_condv_.reset();
 
       sicl::rpc::SiRPC *mgt_client = nullptr;
@@ -317,12 +364,16 @@ void KVRpcService::KeepAlive() {
       RegisterToRestartedManager();
       register_condv_.try_wait_for(std::chrono::seconds(FLAGS_cm_connect_retry_interval_sec));
     }
+    if (!is_running_) {
+      break;
+    }
     {
       std::unique_lock<std::mutex> heartbeat_lock(heartbeat_mutex_);
       heartbeat_condv_.wait_for(
           heartbeat_lock, std::chrono::seconds(FLAGS_heartbeat_cooldown_sec), [this] { return !is_running_; });
-      if (!is_running_)
+      if (!is_running_) {
         break;
+      }
     }
     // do heartbeat with cluster manager
     HeartBeatToCluster();
@@ -340,20 +391,35 @@ void KVRpcService::RegisterOnCluster() {
   NewNodeHandShakeRequestPB handshake_req;
   handshake_req.mutable_node()->set_ip(ip);
   handshake_req.mutable_node()->set_port(port);
+  handshake_req.set_logical_node_id(logical_node_id_);
   auto handshake_rsp = std::make_shared<NewNodeHandShakeResponsePB>();
   auto handshake_done = [handshake_rsp, this](const google::protobuf::Message *rsp,
                                               const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
     if (!ctx->Failed()) {
       auto response = dynamic_cast<const NewNodeHandShakeResponsePB *>(rsp);
       if (response->ret_code() == CommonErr::OK) {
+        // Initialize KVHashTables for shards assigned by CM
+        if (response->assigned_shard_ids_size() > 0) {
+          std::lock_guard<std::mutex> table_lock(all_table_mtx_);
+          for (auto shard_id : response->assigned_shard_ids()) {
+            if (!all_tables_[shard_id]) {
+              auto* table = new KVHashTable();
+              table->Init(shard_id);
+              all_tables_[shard_id] = table;
+            }
+          }
+        }
         is_registered_ = true;
         register_condv_.post();
       } else {
-        MLOG_ERROR("RegisterOnCluster return not OK");
+        MLOG_ERROR("RegisterOnCluster to CM returns not OK, ret_code:{}", response->ret_code());
       }
     } else {
-      MLOG_ERROR(
-          "Failed to RegisterOnCluster to Cluster Manager {}:{}", FLAGS_cm_primary_node_ip, FLAGS_cm_rpc_inter_port);
+      MLOG_ERROR("RegisterOnCluster RPC to CM {}:{} failed: {} ({})",
+                 FLAGS_cm_primary_node_ip,
+                 FLAGS_cm_rpc_inter_port,
+                 ctx->ErrorText(),
+                 ctx->ErrorCode());
     }
   };
 
@@ -377,6 +443,7 @@ void KVRpcService::RegisterToRestartedManager() {
   NewNodeHandShakeRequestPB handshake_req;
   handshake_req.mutable_node()->set_ip(ip);
   handshake_req.mutable_node()->set_port(port);
+  handshake_req.set_logical_node_id(logical_node_id_);
   for (const auto [shard_id, table] : all_tables_) {
     if (table && !table->Empty()) {
       handshake_req.mutable_shard_ids()->Add(shard_id);
@@ -393,10 +460,10 @@ void KVRpcService::RegisterToRestartedManager() {
         cm_ready_ = true;
         register_condv_.post();
       } else {
-        MLOG_ERROR("RegisterToRestartedManager return not OK: {}", ret_code);
+        MLOG_ERROR("RegisterToRestartedManager to CM returns not OK, ret_code:{}", response->ret_code());
       }
     } else {
-      MLOG_ERROR("Failed to RegisterToRestartedManager to Cluster Manager {}:{}: {} ({})",
+      MLOG_ERROR("RegisterToRestartedManager RPC to CM {}:{} failed: {} ({})",
                  FLAGS_cm_primary_node_ip,
                  FLAGS_cm_rpc_inter_port,
                  ctx->ErrorText(),
@@ -424,6 +491,7 @@ void KVRpcService::HeartBeatToCluster() {
   DataServerHeartBeatRequestPB heartbeat_req;
   heartbeat_req.mutable_node()->set_ip(ip);
   heartbeat_req.mutable_node()->set_port(port);
+  heartbeat_req.set_logical_node_id(logical_node_id_);
   auto heartbeat_rsp = std::make_shared<DataServerHeartBeatResponsePB>();
   auto heartbeat_done = [heartbeat_rsp, this](const google::protobuf::Message *rsp,
                                               const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
@@ -431,9 +499,14 @@ void KVRpcService::HeartBeatToCluster() {
       auto response = dynamic_cast<const DataServerHeartBeatResponsePB *>(rsp);
       OnHeartbeatResult(false, response->ret_code());
       if (response->ret_code() != CommonErr::OK) {
-        MLOG_ERROR("HeartBeatToCluster return not OK");
+        MLOG_ERROR("HeartBeatToCluster to CM {}:{} returns not OK, ret_code:{}", response->ret_code());
       }
     } else {
+      MLOG_ERROR("HeartBeatToCluster RPC to CM {}:{} failed: {} ({})",
+                 FLAGS_cm_primary_node_ip,
+                 FLAGS_cm_rpc_inter_port,
+                 ctx->ErrorText(),
+                 ctx->ErrorCode());
       OnHeartbeatResult(true, CommonErr::InvalidState);
     }
   };
@@ -455,14 +528,16 @@ void KVRpcService::OnHeartbeatResult(bool rpc_failed, error_code_t ret_code) {
   }
 
   if (!rpc_failed) {
+    // RPC request succeed, but CM returns error code, do nothing
     return;
   }
 
   const auto failure_count = heartbeat_failure_count_.fetch_add(1) + 1;
-  MLOG_ERROR("Failed to HeartbeatToCluster to Cluster Manager {}:{} (counter={})",
+  MLOG_ERROR("Failed to HeartbeatToCluster to Cluster Manager {}:{} (counter={}), ret_code:{}",
              FLAGS_cm_primary_node_ip,
              FLAGS_cm_rpc_inter_port,
-             failure_count);
+             failure_count,
+             ret_code);
   if (failure_count >= FLAGS_cm_hb_tolerance_count) {
     heartbeat_failure_count_.store(0);
     if (FLAGS_ds_process_exit_cm_disconnection) {
@@ -477,6 +552,10 @@ void KVRpcService::OnHeartbeatResult(bool rpc_failed, error_code_t ret_code) {
 }
 
 void KVRpcService::HandleClusterManagerDisconnect() {
+  if (!cluster_disconnect_handler_) {
+    MLOG_ERROR("Cluster disconnect handler is not set, skip forced shutdown path");
+    return;
+  }
   cluster_disconnect_handler_();
 }
 
@@ -556,6 +635,7 @@ error_code_t KVRpcService::KVPut(std::shared_ptr<simm::common::SimmContext> ctx,
     std::lock_guard<std::mutex> table_lock(all_table_mtx_);
     table = all_tables_[shard_id];
     if (!table) {
+      MLOG_WARN("KVPut: shard {} table not initialized, create lazily on first write", shard_id);
       table = new KVHashTable();
       table->Init(shard_id);
       all_tables_[shard_id] = table;
@@ -787,10 +867,16 @@ void KVRpcService::GetResourceStats(const DataServerResourceRequestPB *req, Data
   rsp->mutable_node()->set_ip(ip);
   rsp->mutable_node()->set_port(port);
   size_t mem_total_bytes = cache_pool_->mem_total_bytes();
-  size_t mem_used_bytes = cache_pool_->mem_used_bytes();
+  size_t mem_allocated_bytes = cache_pool_->mem_used_bytes();
+  size_t mem_used_bytes = 0;
+  for (uint32_t s = 0; s < FLAGS_shard_total_num; s++) {
+    mem_used_bytes += shard_used_bytes_[s].load(std::memory_order_relaxed);
+  }
   rsp->set_mem_total_bytes(mem_total_bytes);
+  rsp->set_mem_allocated_bytes(mem_allocated_bytes);
   rsp->set_mem_used_bytes(mem_used_bytes);
   rsp->set_mem_free_bytes(mem_total_bytes - mem_used_bytes);
+  rsp->set_last_report_timestamp_us(simm::utils::current_microseconds());
 
   rsp->mutable_shard_mem_infos()->Reserve(FLAGS_shard_total_num);
   for (uint32_t s = 0; s < FLAGS_shard_total_num; s++) {

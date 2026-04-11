@@ -16,7 +16,11 @@ list(REMOVE_ITEM MODULE_SRC_LIB
   "${CMAKE_CURRENT_SOURCE_DIR}/cm_main.cc"
 )
 
-add_executable(${MODULE_NAME} ${MODULE_SRC} ${MODULE_HEADERS})
+set(DS_SHARED_FLAG_SRC
+  "${PROJECT_SOURCE_DIR}/src/data_server/ds_flags.cc"
+)
+
+add_executable(${MODULE_NAME} ${MODULE_SRC} ${MODULE_HEADERS} ${DS_SHARED_FLAG_SRC})
 target_link_libraries(${MODULE_NAME} PRIVATE 
   gflags
   folly
@@ -32,7 +36,7 @@ set_target_properties(${MODULE_NAME} PROPERTIES
   INSTALL_RPATH "\$ORIGIN/../../../third_party/sict/lib"
 )
 
-add_library(${MODULE_NAME}_static STATIC ${MODULE_SRC_LIB})
+add_library(${MODULE_NAME}_static STATIC ${MODULE_SRC_LIB} ${DS_SHARED_FLAG_SRC})
 # PRIVATE means that the libraries are only used by this target and 
 # not propagated to targets that link against this one.
 #
@@ -46,3 +50,10 @@ target_link_libraries(${MODULE_NAME}_static PRIVATE
   sict
   simm_common
 )
+
+if(ENABLE_TESTS)
+  target_compile_definitions(${MODULE_NAME}_static PRIVATE SIMM_UNIT_TEST)
+  target_include_directories(${MODULE_NAME}_static PRIVATE
+    ${PROJECT_SOURCE_DIR}/third_party/gtest/googletest/include
+  )
+endif()
