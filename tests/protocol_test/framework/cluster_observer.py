@@ -1,7 +1,6 @@
 """Cluster state observation, condition waiting, and invariant assertions."""
 
 import logging
-import math
 import time
 
 from .admin_client import AdminClient, AdminClientError, NodeInfo
