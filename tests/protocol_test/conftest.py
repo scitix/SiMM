@@ -134,7 +134,7 @@ def cluster_small(tmp_path, binary_dir):
 @pytest.fixture
 def cluster_medium(tmp_path, binary_dir):
     """1 CM + 6 DS cluster."""
-    config = _make_config(num_ds=6, cm_grace_period_sec=8)
+    config = _make_config(num_ds=6, cm_grace_sec=8)
     cluster = SimmCluster(
         config,
         log_dir=tmp_path / "logs" if not config.cm_host else None,
