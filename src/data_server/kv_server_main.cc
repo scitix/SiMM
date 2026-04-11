@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
 
   auto admin_server = std::make_unique<simm::common::AdminServer>(simm::common::kDsAdminUdsBasePath);
   if (admin_server == nullptr || !admin_server->isRunning()) {
-    MLOG_ERROR("Failed to init AdminServer");
+    MLOG_ERROR("Failed to init AdminServer at {}", simm::common::kDsAdminUdsBasePath);
     return -1;
   }
 

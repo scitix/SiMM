@@ -83,7 +83,7 @@ int main(int argc, char *argv[]) {
 
   auto admin_server = std::make_unique<simm::common::AdminServer>(simm::common::kCmAdminUdsBasePath);
   if (admin_server == nullptr || !admin_server->isRunning()) {
-    MLOG_CRITICAL("Failed to init AdminServer");
+    MLOG_CRITICAL("Failed to init AdminServer at {}", simm::common::kCmAdminUdsBasePath);
     return CmErr::InitFailed;
   }
 
