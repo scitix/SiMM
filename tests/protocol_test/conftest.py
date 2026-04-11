@@ -115,6 +115,7 @@ def binary_dir():
 
     # pytest.skip raises Skipped exception — execution never reaches implicit return
     pytest.skip("SiMM binaries not found. Set SIMM_BUILD_DIR or build with ./build.sh")
+    return Path("/dev/null")
 
 
 @pytest.fixture

@@ -15,8 +15,6 @@ Key flags:
   ds_logical_node_id                (per-DS, e.g. "simm-ds-0")
 """
 
-import time
-
 import pytest
 
 from framework.cluster import SimmCluster

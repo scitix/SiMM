@@ -18,7 +18,6 @@ class TestCMRestart:
 
     def test_cm_crash_all_ds_rejoin(self, cluster_small):
         """Kill CM → DS detect failure → restart CM → all DS re-register."""
-        shard_total_before = cluster_small.observer.get_total_shard_count()
 
         # Kill CM
         cluster_small.fault_injector.kill_process(cluster_small.cm)

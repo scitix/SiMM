@@ -5,8 +5,6 @@ Verifies both sides:
   DS-side: cm_ready transitions, heartbeat_failure_count, re-registration
 """
 
-import time
-
 import pytest
 
 
