@@ -1,7 +1,5 @@
 """Tests for node registration and initial cluster formation."""
 
-import time
-
 
 class TestNodeJoin:
     """Verify DS nodes register correctly during grace period."""
