@@ -205,8 +205,8 @@ class SshExecutor:
             port_str = result.stdout.strip()
             if port_str.isdigit():
                 return int(port_str)
-        except (subprocess.CalledProcessError, SshError):
-            pass
+        except (subprocess.CalledProcessError, SshError) as e:
+            logger.debug("Failed to find free port on %s: %s", host, e)
         return None
 
     def run_iptables(self, host: str, args: str) -> bool:
