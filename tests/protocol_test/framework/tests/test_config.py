@@ -1,6 +1,5 @@
 """Unit tests for config.py — YAML loading, deep merge, config parsing."""
 
-import textwrap
 from pathlib import Path
 
 import pytest
