@@ -309,7 +309,24 @@ std::vector<int16_t> KVStore::MPut(const std::vector<std::string> &keys, std::ve
   }
   auto rets = simm::clnt::ClientMessenger::Instance().MultiPut(keys, metadatas);
   for (size_t i = 0; i < key_cnt; ++i) {
-    if (rets[i] < 0) {
+    if (rets[i] == DsErr::DataAlreadyExists) {
+      // FIXME(szzhao): remove workaround after it's implemented in data server
+      MLOG_WARN("MPut kv {} will override existing entry", keys[i]);
+      auto del_res = Delete(keys[i]);
+      if (del_res != CommonErr::OK) {
+        MLOG_ERROR("MPut kv {} by deleting existing one failed: {}", keys[i], del_res);
+        continue;
+      }
+      auto ctx = std::make_shared<simm::common::SimmContext>();
+      auto retry_res = simm::clnt::ClientMessenger::Instance().Put(keys[i], metadatas[i], ctx);
+      // NOTE(zxliao): assume same value already put if entry still exist after deleting
+      if (retry_res == CommonErr::OK || retry_res == DsErr::DataAlreadyExists) {
+        rets[i] = CommonErr::OK;
+      } else {
+        rets[i] = retry_res;
+        MLOG_ERROR("MPut kv {} retry after delete failed: {}", keys[i], retry_res);
+      }
+    } else if (rets[i] < 0) {
       MLOG_ERROR("MPut kv {} failed: {}", keys[i], rets[i]);
     }
   }

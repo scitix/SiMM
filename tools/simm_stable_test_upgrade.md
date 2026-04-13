@@ -1,104 +1,104 @@
-# simm_stable_test 升级说明
+# simm_stable_test Upgrade Notes
 
-## 背景
+## Background
 
-原始版本的 `tools/simm_stable_test.cc` 更偏功能冒烟工具，存在几个明显短板：
+The original `tools/simm_stable_test.cc` was more of a functional smoke-test tool, with several notable shortcomings:
 
-- `async` 路径基本未完成，`iodepth` 实际不生效
-- 工作负载模型过于单一，难以支撑长期稳定性验证
-- 缺少周期性统计与延迟指标，不利于长时间运行时观测
-- key 基本一次性生成，无法形成更真实的覆盖写、热点和存活数据压力
-- 停止逻辑较粗，长跑时不够稳妥
+- The `async` path was largely incomplete; `iodepth` had no real effect
+- The workload model was too simplistic to support long-running stability testing
+- No periodic statistics or latency metrics, making it hard to observe during extended runs
+- Keys were essentially generated once, unable to produce realistic overwrite, hotspot, or live-data pressure
+- Shutdown logic was too coarse for long-running scenarios
 
-这次改动的目标，是把它提升成更适合持续压测、稳定性回归和故障观测的工具。
+The goal of this change is to elevate the tool into one better suited for sustained stress testing, stability regression, and fault observation.
 
-## 主要改动
+## Key Changes
 
-### 1. 补全 async 模式
+### 1. Complete the async mode
 
-- 实现真正的异步提交与回调处理
-- `iodepth` 现在实际控制每个 worker 的并发异步请求数
-- 支持异步 `put/get/exists/delete`
-- `async + batch` 组合当前显式禁止，避免半成品路径误用
+- Implement true asynchronous submission and callback handling
+- `iodepth` now actually controls per-worker concurrent async request count
+- Support async `put/get/exists/delete`
+- `async + batch` combination is explicitly disallowed to prevent use of incomplete paths
 
-### 2. 引入长期稳定 workload 模型
+### 2. Introduce long-running stable workload model
 
-- 每个 worker 持有固定的逻辑 keyspace
-- key 在 keyspace 内反复复用，而不是持续只写新 key
-- 支持更贴近真实服务的混合流量：
+- Each worker owns a fixed logical keyspace
+- Keys are reused within the keyspace instead of only writing new keys
+- Support mixed traffic closer to real-world services:
   - `putratio`
   - `getratio`
   - `existsratio`
   - `delratio`
   - `oputratio`
 
-这样可以覆盖：
+This enables coverage of:
 
-- 覆盖写
-- 老数据读取
-- 数据删除后再次访问
-- 热点 key 反复更新
+- Overwrite scenarios
+- Stale data reads
+- Access after deletion
+- Repeated hotspot key updates
 
-### 3. 改进数据校验方式
+### 3. Improve data verification
 
-- 不再为每个 key 保存整份 value 副本
-- 改为记录 `(exists, size, seed)` 元信息
-- value 内容通过 `seed` 按确定性规则生成和校验
+- No longer store a full value copy per key
+- Instead track `(exists, size, seed)` metadata
+- Value content is deterministically generated and verified via `seed`
 
-收益：
+Benefits:
 
-- 降低工具自身内存开销
-- 适合更长时间运行
-- 仍可对 `get` 返回内容做一致性校验
+- Reduced memory footprint of the tool itself
+- Suitable for longer runs
+- Still able to verify consistency of `get` return data
 
-### 4. 增加延迟与吞吐统计
+### 4. Add latency and throughput statistics
 
-新增统计项：
+New metrics:
 
-- 总操作数
-- 成功/失败计数
-- submit 失败计数
-- 数据匹配/不匹配计数
-- put/get 字节量
-- 延迟统计：
+- Total operation count
+- Success/failure counts
+- Submit failure count
+- Data match/mismatch counts
+- put/get byte volumes
+- Latency statistics:
   - avg
   - p50
   - p95
   - p99
   - max
 
-### 5. 增加周期性报告
+### 5. Add periodic reporting
 
-新增 `report_interval_inSecs`：
+New `report_interval_inSecs` flag:
 
-- 周期性打印增量统计
-- 测试结束时打印最终汇总
+- Periodically print incremental statistics
+- Print final summary at test completion
 
-这让工具更适合：
+This makes the tool better suited for:
 
-- 长跑观测
-- 问题定位
-- 性能回归对比
+- Long-running observation
+- Problem diagnosis
+- Performance regression comparison
 
-### 6. 改进退出与收尾
+### 6. Improve shutdown and cleanup
 
-- 注册 `SIGINT` / `SIGTERM`
-- 支持收到停止信号后优雅退出
-- async worker 在停止时会等待 inflight 请求完成再退出
+- Register `SIGINT` / `SIGTERM` handlers
+- Support graceful shutdown upon receiving stop signals
+- Async workers wait for inflight requests to complete before exiting
 
-这能减少：
+This reduces:
 
-- 工具自身异常中止
-- 长跑结束时统计不完整
-- 回调尚未收敛时直接退出的问题
+- Abnormal tool termination
+- Incomplete statistics at end of long runs
+- Issues from exiting before callbacks have settled
 
-### 7. 改善可用性
+### 7. Improve usability
 
-- 补充更完整的 flags
-- `--help` 现在有正式 usage 信息
-- 启动时打印关键测试参数
+- Add more complete flags
+- `--help` now shows proper usage information
+- Print key test parameters at startup
 
-## 新增/调整的重要参数
+## New/Adjusted Parameters
 
 - `putratio`
 - `getratio`
@@ -109,33 +109,32 @@
 - `report_interval_inSecs`
 - `strict_verify_exists`
 
-## 当前限制
+## Current Limitations
 
-- `async + batch_mode` 暂不支持
-- 工具仍以 client 视角做稳定性测试，不替代 server 端 profiling/资源分析
-- 延迟统计当前采用分桶估算 percentile，不是全量样本精确分位数
+- `async + batch_mode` is not yet supported
+- The tool tests stability from the client perspective only; it does not replace server-side profiling/resource analysis
+- Latency statistics use bucketed percentile estimation, not exact quantiles from full samples
 
-## 构建验证
+## Build Verification
 
-已完成以下验证：
+The following verifications have been completed:
 
-- `build/release` 下 `simm_stable_test` 构建通过
-- `build/debug` 下 `simm_stable_test` 构建通过
-- `--help` 启动 smoke test 通过
+- `simm_stable_test` builds successfully under `build/release`
+- `simm_stable_test` builds successfully under `build/debug`
+- `--help` startup smoke test passes
 
-测试前统一使用：
+Before testing, set:
 
 ```bash
 export SICL_LOG_LEVEL=WARN
 ```
 
-## 建议的后续增强
+## Suggested Future Enhancements
 
-如果后面继续迭代，建议优先考虑：
+If further iteration is planned, consider prioritizing:
 
-- 增加错误码分桶统计
-- 增加更明确的热点分布模型
-- 增加阶段性 summary 文件输出
-- 支持 fault injection 联动场景
-- 增加更细粒度的 async 超时/回调异常观测
-
+- Add error code bucketed statistics
+- Add a more explicit hotspot distribution model
+- Add periodic summary file output
+- Support fault injection integration scenarios
+- Add finer-grained async timeout/callback anomaly observation

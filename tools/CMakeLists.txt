@@ -30,6 +30,17 @@ set_target_properties(${KVIO_BENCH_TOOL_NAME} PROPERTIES
   INSTALL_RPATH "\$ORIGIN/../../../../third_party/sict/lib"
 )
 
+set(KVIO_BENCH_V2_TOOL "simm_kvio_bench_v2.cc")
+get_filename_component(KVIO_BENCH_V2_TOOL_NAME ${KVIO_BENCH_V2_TOOL} NAME_WE)
+add_executable(${KVIO_BENCH_V2_TOOL_NAME} ${KVIO_BENCH_V2_TOOL})
+target_link_libraries(${KVIO_BENCH_V2_TOOL_NAME} PRIVATE
+  ${TOOLS_COMMON_LIBS}
+  client_static)
+set_target_properties(${KVIO_BENCH_V2_TOOL_NAME} PROPERTIES
+  BUILD_RPATH "\$ORIGIN/../../../../third_party/sict/lib"
+  INSTALL_RPATH "\$ORIGIN/../../../../third_party/sict/lib"
+)
+
 set(KVIO_STABLE_TEST "simm_stable_test.cc")
 get_filename_component(KVIO_STABLE_TEST_NAME ${KVIO_STABLE_TEST} NAME_WE)
 add_executable(${KVIO_STABLE_TEST_NAME} ${KVIO_STABLE_TEST})

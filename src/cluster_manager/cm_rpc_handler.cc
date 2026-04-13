@@ -38,7 +38,8 @@ namespace cm {
 static inline void FillNodeInfoHelper(const std::string &addr_str,
                                       NodeStatus status,
                                       const std::shared_ptr<simm::common::NodeResource> &resource,
-                                      NodeInfoPB *node_info) {
+                                      NodeInfoPB *node_info,
+                                      const std::string &logical_node_id = "") {
   auto node_addr = simm::common::NodeAddress::ParseFromString(addr_str);
   if (!node_addr) {
     return;
@@ -48,6 +49,9 @@ static inline void FillNodeInfoHelper(const std::string &addr_str,
   addr_pb->set_ip(node_addr->node_ip_);
   addr_pb->set_port(node_addr->node_port_);
   node_info->set_node_status(static_cast<int32_t>(status));
+  if (!logical_node_id.empty()) {
+    node_info->set_logical_node_id(logical_node_id);
+  }
 
   if (resource) {
     auto *res_pb = node_info->mutable_resource();
@@ -429,11 +433,12 @@ void ListNodesHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> ctx,
     res_map[addr_str] = resource;
   }
 
-  // Build response with node info (address, status, resource)
+  // Build response with node info (address, status, resource, logical_node_id)
   for (const auto &[addr_str, status] : node_stat_list) {
     auto *node_info = resp->add_nodes();
     auto res_it = res_map.find(addr_str);
-    FillNodeInfoHelper(addr_str, status, res_it != res_map.end() ? res_it->second : nullptr, node_info);
+    auto logical_id = node_manager_->ResolveLogicalId(addr_str);
+    FillNodeInfoHelper(addr_str, status, res_it != res_map.end() ? res_it->second : nullptr, node_info, logical_id);
   }
 
   resp->set_ret_code(CommonErr::OK);
@@ -497,7 +502,8 @@ void GetNodeResourceHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> c
     return;
   }
 
-  FillNodeInfoHelper(addr_str, node_manager_->QueryNodeStatus(addr_str), resource, resp->mutable_node());
+  FillNodeInfoHelper(addr_str, node_manager_->QueryNodeStatus(addr_str), resource, resp->mutable_node(),
+                     node_manager_->ResolveLogicalId(addr_str));
   for (const auto &shard_resource : resource->shard_mem_infos_) {
     auto *shard_pb = resp->add_shard_resources();
     shard_pb->set_shard_id(shard_resource.shard_id_);
