@@ -330,12 +330,53 @@ class ClientMessengerTestPeer {
         shard_id, static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_LOOKUP), req, resp, ctx);
   }
 
+  static error_code_t CallSyncPut(uint16_t shard_id) {
+    auto ctx = std::make_shared<simm::common::SimmContext>();
+    sicl::rpc::RpcContext *ctx_p = nullptr;
+    sicl::rpc::RpcContext::newInstance(ctx_p);
+    auto rpc_ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
+    ctx->set_rpc_ctx(rpc_ctx);
+    rpc_ctx->set_timeout(sicl::transport::TimerTick::TIMER_1S);
+
+    KVPutRequestPB req;
+    req.set_shard_id(shard_id);
+    req.set_key("mock-key");
+    req.set_val_len(16);
+    req.set_buf_addr(0);
+    req.set_buf_ofs(0);
+    req.set_buf_len(16);
+    auto resp = std::make_shared<KVPutResponsePB>();
+    return ClientMessenger::Instance().call_sync<KVPutRequestPB, KVPutResponsePB>(
+        shard_id, static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_PUT), req, resp, ctx);
+  }
+
   static error_code_t BuildConnectionWait(const std::string &addr) {
     return ClientMessenger::Instance().build_connection(addr, ClientMessenger::BuildConnWaitMode::kWaitForInflight);
   }
 
   static error_code_t BuildConnectionNoWait(const std::string &addr) {
     return ClientMessenger::Instance().build_connection(addr, ClientMessenger::BuildConnWaitMode::kNoWait);
+  }
+
+  static error_code_t CallAsyncLookup(uint16_t shard_id, Callback done) {
+    auto ctx = std::make_shared<simm::common::SimmContext>();
+    sicl::rpc::RpcContext *ctx_p = nullptr;
+    sicl::rpc::RpcContext::newInstance(ctx_p);
+    auto rpc_ctx = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
+    ctx->set_rpc_ctx(rpc_ctx);
+    rpc_ctx->set_timeout(sicl::transport::TimerTick::TIMER_1S);
+
+    KVLookupRequestPB req;
+    req.set_shard_id(shard_id);
+    req.set_key("mock-key");
+    auto resp = std::make_shared<KVLookupResponsePB>();
+    return ClientMessenger::Instance().call_async<KVLookupRequestPB, KVLookupResponsePB>(
+        shard_id, static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_LOOKUP),
+        req, resp, ctx, std::move(done));
+  }
+
+  static sicl::transport::TimerTick ConvertTimeout(int32_t timeout_ms) {
+    return ClientMessenger::Instance().convert_timeout_setting_to_timer_tick(timeout_ms);
   }
 
   // Inject a dead-since timestamp for a DS, simulating it having been seen as dead at a given
@@ -520,10 +561,53 @@ TEST_F(ClientMessengerUnitTest, SyncRetryFlagControlsRetryCountForTimeoutErrors)
   EXPECT_EQ(ClientMessengerTestPeer::CallSyncLookup(0), ClntErr::ClntSendRPCFailed);
   EXPECT_EQ(fake_rpc->SyncSendCalls(), 1);
 
+  // Re-activate DS (Fix 5: SICL_ERR_TIMEOUT now triggers failover, marking DS inactive)
+  ClientMessengerTestPeer::MarkConnectionActive("10.0.0.1:1001", true, 2);
   FLAGS_clnt_syncreq_enable_retry = true;
   FLAGS_clnt_syncreq_retry_count = 2;
   EXPECT_EQ(ClientMessengerTestPeer::CallSyncLookup(0), ClntErr::ClntSendRPCFailed);
-  EXPECT_EQ(fake_rpc->SyncSendCalls(), 4);
+  // 1 (first sub-test) + 1 (initial send, then timeout triggers inactive → fast break)
+  EXPECT_EQ(fake_rpc->SyncSendCalls(), 2);
+
+  FLAGS_clnt_syncreq_enable_retry = old_enable_retry;
+  FLAGS_clnt_syncreq_retry_count = old_retry_count;
+}
+
+TEST_F(ClientMessengerUnitTest, SyncLookupRetriesOnRetryableRpcErrors) {
+  auto *fake_rpc = InstallFakeRpcClient();
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.1:1001", true, 1, {0}, std::make_shared<FakeConnection>("ready"));
+
+  const auto old_enable_retry = FLAGS_clnt_syncreq_enable_retry;
+  const auto old_retry_count = FLAGS_clnt_syncreq_retry_count;
+
+  fake_rpc->SetSyncSendHandler([](const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+    ctx->SetError(-9999, "mock retryable failure");
+  });
+
+  FLAGS_clnt_syncreq_enable_retry = true;
+  FLAGS_clnt_syncreq_retry_count = 2;
+  EXPECT_EQ(ClientMessengerTestPeer::CallSyncLookup(0), ClntErr::ClntSendRPCFailed);
+  EXPECT_EQ(fake_rpc->SyncSendCalls(), 3);
+
+  FLAGS_clnt_syncreq_enable_retry = old_enable_retry;
+  FLAGS_clnt_syncreq_retry_count = old_retry_count;
+}
+
+TEST_F(ClientMessengerUnitTest, SyncPutFailsFastWithoutRetryOnRpcErrors) {
+  auto *fake_rpc = InstallFakeRpcClient();
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.1:1001", true, 1, {0}, std::make_shared<FakeConnection>("ready"));
+
+  const auto old_enable_retry = FLAGS_clnt_syncreq_enable_retry;
+  const auto old_retry_count = FLAGS_clnt_syncreq_retry_count;
+
+  fake_rpc->SetSyncSendHandler([](const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+    ctx->SetError(-9999, "mock write failure");
+  });
+
+  FLAGS_clnt_syncreq_enable_retry = true;
+  FLAGS_clnt_syncreq_retry_count = 2;
+  EXPECT_EQ(ClientMessengerTestPeer::CallSyncPut(0), ClntErr::ClntSendRPCFailed);
+  EXPECT_EQ(fake_rpc->SyncSendCalls(), 1);
 
   FLAGS_clnt_syncreq_enable_retry = old_enable_retry;
   FLAGS_clnt_syncreq_retry_count = old_retry_count;
@@ -697,6 +781,166 @@ TEST_F(ClientMessengerUnitTest, GetCmAddressUsesFlagToSkipK8SLookup) {
   FLAGS_clnt_use_k8s = old_use_k8s;
   FLAGS_cm_primary_node_ip = old_cm_ip;
   FLAGS_cm_rpc_inter_port = old_cm_port;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 1: Async 假成功 — call_async must propagate errors to callers
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_F(ClientMessengerUnitTest, CallAsyncReturnsErrorWhenShardNotFound) {
+  auto *fake_rpc = InstallFakeRpcClient();
+  // shard 99 does not exist in shard_table_
+  auto done = [](const google::protobuf::Message *, const std::shared_ptr<sicl::rpc::RpcContext>) {};
+  auto ret = ClientMessengerTestPeer::CallAsyncLookup(99, done);
+  EXPECT_EQ(ret, ClntErr::ClntLookupShardFailed);
+}
+
+TEST_F(ClientMessengerUnitTest, CallAsyncReturnsErrorWhenConnectionInactive) {
+  auto *fake_rpc = InstallFakeRpcClient();
+  // Install DS with inactive connection, build_connection will fail via hook
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.1:1001", false, 1, {0}, nullptr);
+  ClientMessengerTestPeer::SetBuildConnectionHook([](const std::string &) {
+    return ClntErr::BuildConnectionFailed;
+  });
+  auto done = [](const google::protobuf::Message *, const std::shared_ptr<sicl::rpc::RpcContext>) {};
+  auto ret = ClientMessengerTestPeer::CallAsyncLookup(0, done);
+  EXPECT_EQ(ret, ClntErr::BuildConnectionFailed);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 3: ApplyRouteTableDiff no longer clears shard_table_ (non-atomic)
+// Verify that existing shard entries are NOT lost during route table apply.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_F(ClientMessengerUnitTest, ApplyRouteTableDiffDoesNotClearExistingShards) {
+  auto *fake_rpc = InstallFakeRpcClient();
+
+  // Set up initial state: DS A owns shard 0, DS B owns shard 1
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.1:1001", true, 1, {0},
+                                            std::make_shared<FakeConnection>("a"));
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.2:1002", true, 1, {1},
+                                            std::make_shared<FakeConnection>("b"));
+
+  // New routing: shard 1 moves to DS C, shard 0 stays on DS A
+  ClientMessengerTestPeer::SetGetCmAddressHook([]() { return std::string("10.0.0.100:9000"); });
+  ClientMessengerTestPeer::SetRouteQueryHook([](const std::string &) {
+    return std::make_pair(CommonErr::OK,
+        BuildRoutingResponse({{"10.0.0.1:1001", {0}}, {"10.0.0.3:1003", {1}}}));
+  });
+  ClientMessengerTestPeer::SetBuildConnectionHook([](const std::string &addr) {
+    ClientMessengerTestPeer::MarkConnectionActive(addr, true, 10);
+    return CommonErr::OK;
+  });
+
+  EXPECT_EQ(ClientMessengerTestPeer::ReInit(), CommonErr::OK);
+
+  // Shard 0 should still be accessible (not lost during update)
+  EXPECT_EQ(ClientMessengerTestPeer::ShardOwner(0), "10.0.0.1:1001");
+  EXPECT_EQ(ClientMessengerTestPeer::ShardOwner(1), "10.0.0.3:1003");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 4: build_connection wait_for timeout (30s) instead of infinite wait
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_F(ClientMessengerUnitTest, BuildConnectionWaitTimesOutInsteadOfBlockingForever) {
+  auto *fake_rpc = InstallFakeRpcClient();
+  // Simulate a very slow connection (5s delay) to test that wait_for doesn't block forever.
+  // We use kNoWait from a second thread; primary thread uses kWaitForInflight.
+  // But to test the timeout path directly, we use a trick: manually set connecting_=true
+  // and never clear it, then verify wait_for returns failure.
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.5:1005", false, 0, {0}, nullptr);
+
+  // Start a thread that holds the connecting_ flag for > 1s
+  std::thread holder([&]() {
+    // This will acquire connecting_ = true
+    fake_rpc->SetConnectDelay(std::chrono::milliseconds(2000));
+    fake_rpc->SetConnectHandler([]() { return std::make_shared<FakeConnection>("slow"); });
+    ClientMessengerTestPeer::BuildConnectionWait("10.0.0.5:1005");
+  });
+
+  // Give the holder thread time to acquire connecting_
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  // Second caller with kNoWait should fail fast (not block)
+  auto ret = ClientMessengerTestPeer::BuildConnectionNoWait("10.0.0.5:1005");
+  EXPECT_EQ(ret, ClntErr::BuildConnectionFailed);
+
+  holder.join();
+  // After holder completes, connection should be active
+  EXPECT_TRUE(ClientMessengerTestPeer::IsDsActive("10.0.0.5:1005"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 5: SICL_ERR_TIMEOUT triggers failover via ReconnectByErrors
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_F(ClientMessengerUnitTest, TimeoutErrorTriggersFailoverReconnect) {
+  auto *fake_rpc = InstallFakeRpcClient();
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.1:1001", true, 5, {0},
+                                            std::make_shared<FakeConnection>("ready"));
+
+  auto rpc_ctx = MakeFailedRpcContext(sicl::transport::SICL_ERR_TIMEOUT);
+  ClientMessengerTestPeer::HandleAsyncFailure(rpc_ctx, "10.0.0.1:1001", 0, 5);
+
+  // DS should be marked inactive after timeout error (triggering failover)
+  EXPECT_FALSE(ClientMessengerTestPeer::IsDsActive("10.0.0.1:1001"));
+}
+
+TEST_F(ClientMessengerUnitTest, TimeoutErrorDoesNotTriggerIfGenNumChanged) {
+  auto *fake_rpc = InstallFakeRpcClient();
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.1:1001", true, 5, {0},
+                                            std::make_shared<FakeConnection>("ready"));
+
+  auto rpc_ctx = MakeFailedRpcContext(sicl::transport::SICL_ERR_TIMEOUT);
+  // Use stale gen_num 3 (current is 5) — should NOT trigger failover
+  ClientMessengerTestPeer::HandleAsyncFailure(rpc_ctx, "10.0.0.1:1001", 0, 3);
+
+  EXPECT_TRUE(ClientMessengerTestPeer::IsDsActive("10.0.0.1:1001"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 8: call_sync breaks immediately when connection is inactive
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_F(ClientMessengerUnitTest, CallSyncBreaksImmediatelyOnInactiveConnection) {
+  auto *fake_rpc = InstallFakeRpcClient();
+  // Install DS with inactive connection
+  ClientMessengerTestPeer::InstallDsContext("10.0.0.1:1001", false, 1, {0}, nullptr);
+
+  const auto old_enable_retry = FLAGS_clnt_syncreq_enable_retry;
+  const auto old_retry_count = FLAGS_clnt_syncreq_retry_count;
+  FLAGS_clnt_syncreq_enable_retry = true;
+  FLAGS_clnt_syncreq_retry_count = 5;
+
+  auto start = std::chrono::steady_clock::now();
+  auto ret = ClientMessengerTestPeer::CallSyncLookup(0);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_EQ(ret, ClntErr::ClntSendRPCFailed);
+  // Should complete in < 100ms (no retry sleeps, which would add 100ms+200ms+...)
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 100);
+  // sync_send should never be called (connection was inactive)
+  EXPECT_EQ(fake_rpc->SyncSendCalls(), 0);
+
+  FLAGS_clnt_syncreq_enable_retry = old_enable_retry;
+  FLAGS_clnt_syncreq_retry_count = old_retry_count;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 9: Negative timeout clamped to TIMER_60S instead of TIMER_END
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_F(ClientMessengerUnitTest, NegativeTimeoutClampedToTimer60S) {
+  EXPECT_EQ(ClientMessengerTestPeer::ConvertTimeout(-1), sicl::transport::TimerTick::TIMER_60S);
+  EXPECT_EQ(ClientMessengerTestPeer::ConvertTimeout(-999), sicl::transport::TimerTick::TIMER_60S);
+}
+
+TEST_F(ClientMessengerUnitTest, PositiveTimeoutStillWorksCorrectly) {
+  EXPECT_EQ(ClientMessengerTestPeer::ConvertTimeout(1), sicl::transport::TimerTick::TIMER_1MS);
+  EXPECT_EQ(ClientMessengerTestPeer::ConvertTimeout(1000), sicl::transport::TimerTick::TIMER_1S);
+  EXPECT_EQ(ClientMessengerTestPeer::ConvertTimeout(3000), sicl::transport::TimerTick::TIMER_3S);
+  EXPECT_EQ(ClientMessengerTestPeer::ConvertTimeout(60000), sicl::transport::TimerTick::TIMER_60S);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

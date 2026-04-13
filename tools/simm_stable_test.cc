@@ -501,8 +501,15 @@ void print_stats(const ThreadStats &s, uint32_t threads, uint64_t elapsed_secs, 
   static constexpr const char *kRed = "\033[31m";
   static constexpr const char *kGreen = "\033[32m";
   static constexpr const char *kReset = "\033[0m";
-  auto red_label = [&](const char *label) { return std::string(kRed) + label + kReset; };
-  auto green_label = [&](const char *label) { return std::string(kGreen) + label + kReset; };
+  // Color value red only when non-zero (actual failure); green for success counts
+  auto fail_val = [&](auto value) -> std::string {
+    auto s = folly::to<std::string>(value);
+    return value != 0 ? std::string(kRed) + s + kReset : s;
+  };
+  auto succ_val = [&](auto value) -> std::string {
+    auto s = folly::to<std::string>(value);
+    return value != 0 ? std::string(kGreen) + s + kReset : s;
+  };
 
   const double qps = elapsed_secs == 0 ? 0.0 : static_cast<double>(s.total_ops()) / static_cast<double>(elapsed_secs);
   const double throughput_mb = elapsed_secs == 0 ? 0.0
@@ -514,31 +521,31 @@ void print_stats(const ThreadStats &s, uint32_t threads, uint64_t elapsed_secs, 
             << "Threads         : " << threads << "\n"
             << "ElapsedSecs     : " << elapsed_secs << "\n"
             << "TotalOps        : " << s.total_ops() << "\n"
-            << red_label("Failures        ") << ": " << s.total_failures() << "\n"
-            << red_label("SubmitFails     ") << ": " << s.submit_fails_ << "\n"
+            << "Failures        : " << fail_val(s.total_failures()) << "\n"
+            << "SubmitFails     : " << fail_val(s.submit_fails_) << "\n"
             << "PutCnt          : " << s.put_ << "\n"
-            << red_label("PutFails        ") << ": " << s.put_fails_ << "\n"
-            << green_label("PutSuccs        ") << ": " << s.put_succs_ << "\n"
+            << "PutFails        : " << fail_val(s.put_fails_) << "\n"
+            << "PutSuccs        : " << succ_val(s.put_succs_) << "\n"
             << "OverwriteCnt    : " << s.overwrite_put_ << "\n"
-            << red_label("OverwriteFails  ") << ": " << s.overwrite_put_fails_ << "\n"
-            << green_label("OverwriteSuccs  ") << ": " << s.overwrite_put_succs_ << "\n"
+            << "OverwriteFails  : " << fail_val(s.overwrite_put_fails_) << "\n"
+            << "OverwriteSuccs  : " << succ_val(s.overwrite_put_succs_) << "\n"
             << "GetCnt          : " << s.get_ << "\n"
-            << red_label("GetFails        ") << ": " << s.get_fails_ << "\n"
-            << green_label("GetSuccs        ") << ": " << s.get_succs_ << "\n"
+            << "GetFails        : " << fail_val(s.get_fails_) << "\n"
+            << "GetSuccs        : " << succ_val(s.get_succs_) << "\n"
             << "ExistsCnt       : " << s.exists_ << "\n"
-            << red_label("ExistsFails     ") << ": " << s.exists_fails_ << "\n"
-            << green_label("ExistsSuccs     ") << ": " << s.exists_succs_ << "\n"
+            << "ExistsFails     : " << fail_val(s.exists_fails_) << "\n"
+            << "ExistsSuccs     : " << succ_val(s.exists_succs_) << "\n"
             << "DeleteCnt       : " << s.del_ << "\n"
-            << red_label("DeleteFails     ") << ": " << s.del_fails_ << "\n"
-            << green_label("DeleteSuccs     ") << ": " << s.del_succs_ << "\n"
+            << "DeleteFails     : " << fail_val(s.del_fails_) << "\n"
+            << "DeleteSuccs     : " << succ_val(s.del_succs_) << "\n"
             << "MPutCnt         : " << s.mput_ << "\n"
-            << red_label("MPutFails       ") << ": " << s.mput_fails_ << "\n"
-            << green_label("MPutSuccs       ") << ": " << s.mput_succs_ << "\n"
+            << "MPutFails       : " << fail_val(s.mput_fails_) << "\n"
+            << "MPutSuccs       : " << succ_val(s.mput_succs_) << "\n"
             << "MGetCnt         : " << s.mget_ << "\n"
-            << red_label("MGetFails       ") << ": " << s.mget_fails_ << "\n"
-            << green_label("MGetSuccs       ") << ": " << s.mget_succs_ << "\n"
-            << green_label("DataMatch       ") << ": " << s.data_match_ << "\n"
-            << red_label("DataMismatch    ") << ": " << s.data_mismatch_ << "\n"
+            << "MGetFails       : " << fail_val(s.mget_fails_) << "\n"
+            << "MGetSuccs       : " << succ_val(s.mget_succs_) << "\n"
+            << "DataMatch       : " << succ_val(s.data_match_) << "\n"
+            << "DataMismatch    : " << fail_val(s.data_mismatch_) << "\n"
             << "ExpectedMiss    : " << s.expected_miss_ << "\n"
             << "PutSize         : " << convert_to_readable_size(s.put_size_bytes) << "\n"
             << "GetSize         : " << convert_to_readable_size(s.get_size_bytes) << "\n"

@@ -389,8 +389,8 @@ static void CallbackNode(const std::string &operation,
 
             tabulate::Table node_tbl;
             node_tbl.add_row(
-                {"Node Address", "Status", "Total Memory (MB)", "Allocated Memory (MB)", "Used Memory (MB)",
-                 "Free Memory (MB)"})
+                {"Logic ID", "Node Address", "Status", "Total Memory (MB)", "Allocated Memory (MB)",
+                 "Used Memory (MB)", "Free Memory (MB)"})
                 .format()
                 .width(20);
             for (int i = 0; i < response->nodes_size(); ++i) {
@@ -399,19 +399,22 @@ static void CallbackNode(const std::string &operation,
               std::string addr_str = node_addr.ip() + ":" + std::to_string(node_addr.port());
               std::string_view status_str =
                   simm::common::NodeStatusToString(static_cast<simm::common::NodeStatus>(node_info.node_status()));
-              node_tbl.add_row({addr_str,
+              std::string logic_id = node_info.logical_node_id().empty() ? "-" : node_info.logical_node_id();
+              node_tbl.add_row({logic_id,
+                                addr_str,
                                 std::string(status_str),
                                 std::to_string(node_info.resource().mem_total_bytes() / (1024 * 1024)),
                                 std::to_string(node_info.resource().mem_allocated_bytes() / (1024 * 1024)),
                                 std::to_string(node_info.resource().mem_used_bytes() / (1024 * 1024)),
                                 std::to_string(node_info.resource().mem_free_bytes() / (1024 * 1024))});
             }
-            node_tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
-            node_tbl.column(1).format().width(12);
-            node_tbl.column(2).format().width(18);
+            node_tbl.column(0).format().width(28);
+            node_tbl.column(1).format().width(25).font_style({tabulate::FontStyle::bold});
+            node_tbl.column(2).format().width(12);
             node_tbl.column(3).format().width(18);
             node_tbl.column(4).format().width(18);
             node_tbl.column(5).format().width(18);
+            node_tbl.column(6).format().width(18);
             node_tbl.row(0).format().font_style({tabulate::FontStyle::bold});
             std::cout << node_tbl << std::endl;
             delete static_cast<const ListNodesResponsePB *>(rsp);
@@ -424,8 +427,8 @@ static void CallbackNode(const std::string &operation,
 
           if (verbose) {
             // Verbose mode: show detailed information
-            tbl.add_row({"Node Address", "Status", "Total Memory (MB)", "Allocated Memory (MB)", "Used Memory (MB)",
-                         "Free Memory (MB)"})
+            tbl.add_row({"Logic ID", "Node Address", "Status", "Total Memory (MB)", "Allocated Memory (MB)",
+                         "Used Memory (MB)", "Free Memory (MB)"})
                 .format()
                 .width(20);
 
@@ -433,44 +436,42 @@ static void CallbackNode(const std::string &operation,
               const auto &node_info = response->nodes(i);
               const auto &node_addr = node_info.node_address();
               std::string addr_str = node_addr.ip() + ":" + std::to_string(node_addr.port());
-
-              // Convert node status to string
               std::string_view status_str =
                   simm::common::NodeStatusToString(static_cast<simm::common::NodeStatus>(node_info.node_status()));
-
-              // Convert memory bytes to MB
+              std::string logic_id = node_info.logical_node_id().empty() ? "-" : node_info.logical_node_id();
               std::string total_mem = std::to_string(node_info.resource().mem_total_bytes() / (1024 * 1024));
               std::string allocated_mem = std::to_string(node_info.resource().mem_allocated_bytes() / (1024 * 1024));
               std::string used_mem = std::to_string(node_info.resource().mem_used_bytes() / (1024 * 1024));
               std::string free_mem = std::to_string(node_info.resource().mem_free_bytes() / (1024 * 1024));
 
-              tbl.add_row({addr_str, status_str, total_mem, allocated_mem, used_mem, free_mem});
+              tbl.add_row({logic_id, addr_str, status_str, total_mem, allocated_mem, used_mem, free_mem});
             }
 
-            tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
-            tbl.column(1).format().width(12);
-            tbl.column(2).format().width(18);
+            tbl.column(0).format().width(28);
+            tbl.column(1).format().width(25).font_style({tabulate::FontStyle::bold});
+            tbl.column(2).format().width(12);
             tbl.column(3).format().width(18);
             tbl.column(4).format().width(18);
             tbl.column(5).format().width(18);
+            tbl.column(6).format().width(18);
             tbl.row(0).format().font_style({tabulate::FontStyle::bold});
           } else {
             // Normal mode: show simple information
-            tbl.add_row({"Node Address", "Status"}).format().width(20);
+            tbl.add_row({"Logic ID", "Node Address", "Status"}).format().width(20);
 
             for (int i = 0; i < response->nodes_size(); ++i) {
               const auto &node_info = response->nodes(i);
               const auto &node_addr = node_info.node_address();
               std::string addr_str = node_addr.ip() + ":" + std::to_string(node_addr.port());
-
-              // Convert node status to string
               std::string status_str = (node_info.node_status() == 1) ? "RUNNING" : "DEAD";
+              std::string logic_id = node_info.logical_node_id().empty() ? "-" : node_info.logical_node_id();
 
-              tbl.add_row({addr_str, status_str});
+              tbl.add_row({logic_id, addr_str, status_str});
             }
 
-            tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
-            tbl.column(1).format().width(12);
+            tbl.column(0).format().width(28);
+            tbl.column(1).format().width(25).font_style({tabulate::FontStyle::bold});
+            tbl.column(2).format().width(12);
             tbl.row(0).format().font_style({tabulate::FontStyle::bold});
           }
 
@@ -513,7 +514,8 @@ static void CallbackNode(const std::string &operation,
                     << "\n";
         } else {
           tabulate::Table summary;
-          summary.add_row({"Node Address",
+          summary.add_row({"Logic ID",
+                           "Node Address",
                            "Status",
                            "Total Memory (MB)",
                            "Allocated Memory (MB)",
@@ -523,7 +525,9 @@ static void CallbackNode(const std::string &operation,
           const auto &node_info = response->node();
           const auto &node_addr = node_info.node_address();
           std::string last_report = FormatTimestampSeconds(node_info.resource().last_report_timestamp_us());
-          summary.add_row({node_addr.ip() + ":" + std::to_string(node_addr.port()),
+          std::string logic_id = node_info.logical_node_id().empty() ? "-" : node_info.logical_node_id();
+          summary.add_row({logic_id,
+                           node_addr.ip() + ":" + std::to_string(node_addr.port()),
                            std::string(simm::common::NodeStatusToString(
                                static_cast<simm::common::NodeStatus>(node_info.node_status()))),
                            std::to_string(node_info.resource().mem_total_bytes() / (1024 * 1024)),
@@ -531,6 +535,14 @@ static void CallbackNode(const std::string &operation,
                            std::to_string(node_info.resource().mem_used_bytes() / (1024 * 1024)),
                            std::to_string(node_info.resource().mem_free_bytes() / (1024 * 1024)),
                            last_report});
+          summary.column(0).format().width(28);
+          summary.column(1).format().width(25).font_style({tabulate::FontStyle::bold});
+          summary.column(2).format().width(12);
+          summary.column(3).format().width(18);
+          summary.column(4).format().width(22);
+          summary.column(5).format().width(18);
+          summary.column(6).format().width(18);
+          summary.column(7).format().width(23);
           summary.row(0).format().font_style({tabulate::FontStyle::bold});
           std::cout << summary << "\n";
 

@@ -60,6 +60,7 @@ message NodeInfoPB {
   proto.common.NodeAddressPB node_address = 1;
   sint32 node_status = 2;  // NodeStatus enum: RUNNING = 1, DEAD = 0
   NodeResourcePB resource = 3;
+  string logical_node_id = 4;  // stable node identity (e.g. K8s namespace/pod-name)
 }
 
 // Clnt -> CM

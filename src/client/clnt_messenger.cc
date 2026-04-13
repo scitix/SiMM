@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -144,60 +145,74 @@ error_code_t ClientMessenger::Init() {
           break;
         }
 
-        bool should_reinit = false;
-        if (get_cm_address() != cm_addr_) {
-          // cluster manager address changed, maybe it was restarted, so client should
-          // sync with it and get latest data servers address info
-          should_reinit = true;
-        } else {
-          for (auto [addr, ds_ctx] : ds_conn_ctxs_) {
-            if (!ds_ctx->active.load()) {
-              // track when DS was first seen as dead
-              {
-                std::lock_guard lg(ds_dead_since_mtx_);
-                if (!ds_dead_since_.count(addr)) {
-                  ds_dead_since_[addr] = std::chrono::steady_clock::now();
-                }
-              }
-
-              // Try to reconnect — new DS may have come up with same port
-              if (CommonErr::OK == build_connection(addr)) {
-                std::lock_guard lg(ds_dead_since_mtx_);
-                ds_dead_since_.erase(addr);
-                continue;
-              }
-
-              // Reconnect failed — check if deferred reshard wait window exceeded.
-              // NOTE: CM updates its routing table immediately upon DS handshake (IP update or
-              // replacement), but the client has no way to learn about it promptly because
-              // CM-to-client routing push (RPC_ROUTING_TABLE_UPDATE) is not yet implemented
-              // (see cm_service.cc TODO). Until push is available, the client can only discover
-              // the new IP by polling CM via ReInit() after this wait window expires.
-              // If the DS restarts with a different IP, IO to the affected shards will fail for
-              // up to clnt_deferred_reshard_wait_inSecs seconds. This is a known limitation;
-              // implementing CM→client push will eliminate the gap.
-              std::chrono::duration<double> dur;
-              {
-                std::lock_guard lg(ds_dead_since_mtx_);
-                dur = std::chrono::steady_clock::now() - ds_dead_since_[addr];
-              }
-
-              if (dur > std::chrono::seconds(FLAGS_clnt_deferred_reshard_wait_inSecs)) {
-                // Window expired: CM may have done reshard or IP update, pull new routes
+        try {
+          bool should_reinit = false;
+          if (get_cm_address() != cm_addr_) {
+            // cluster manager address changed, maybe it was restarted, so client should
+            // sync with it and get latest data servers address info
+            should_reinit = true;
+          } else {
+            // Collect inactive DS addresses and track dead_since
+            std::vector<std::string> inactive_addrs;
+            for (auto [addr, ds_ctx] : ds_conn_ctxs_) {
+              if (!ds_ctx->active.load()) {
                 {
                   std::lock_guard lg(ds_dead_since_mtx_);
-                  ds_dead_since_.erase(addr);
+                  if (!ds_dead_since_.count(addr)) {
+                    ds_dead_since_[addr] = std::chrono::steady_clock::now();
+                  }
                 }
-                should_reinit = true;
-                MLOG_ERROR("Failover thread: DS {} unreachable for {}s (> {}s window), triggering reinit",
-                           addr, static_cast<int>(dur.count()), FLAGS_clnt_deferred_reshard_wait_inSecs);
+                inactive_addrs.push_back(addr);
               }
-              // else: still within wait window, keep retrying next cycle
+            }
+
+            // Parallel reconnect attempts for all inactive DS
+            std::vector<std::future<std::pair<std::string, error_code_t>>> futures;
+            for (const auto &addr : inactive_addrs) {
+              futures.push_back(std::async(std::launch::async, [this, addr]() {
+                return std::make_pair(addr, build_connection(addr));
+              }));
+            }
+
+            // Process reconnect results
+            for (auto &f : futures) {
+              auto [addr, ret] = f.get();
+              if (ret == CommonErr::OK) {
+                std::lock_guard lg(ds_dead_since_mtx_);
+                ds_dead_since_.erase(addr);
+              } else {
+                // Reconnect failed — check if deferred reshard wait window exceeded.
+                // NOTE: CM updates its routing table immediately upon DS handshake (IP update or
+                // replacement), but the client has no way to learn about it promptly because
+                // CM-to-client routing push (RPC_ROUTING_TABLE_UPDATE) is not yet implemented
+                // (see cm_service.cc TODO). Until push is available, the client can only discover
+                // the new IP by polling CM via ReInit() after this wait window expires.
+                std::chrono::duration<double> dur;
+                {
+                  std::lock_guard lg(ds_dead_since_mtx_);
+                  dur = std::chrono::steady_clock::now() - ds_dead_since_[addr];
+                }
+
+                if (dur > std::chrono::seconds(FLAGS_clnt_deferred_reshard_wait_inSecs)) {
+                  {
+                    std::lock_guard lg(ds_dead_since_mtx_);
+                    ds_dead_since_.erase(addr);
+                  }
+                  should_reinit = true;
+                  MLOG_ERROR("Failover thread: DS {} unreachable for {}s (> {}s window), triggering reinit",
+                             addr, static_cast<int>(dur.count()), FLAGS_clnt_deferred_reshard_wait_inSecs);
+                }
+                // else: still within wait window, keep retrying next cycle
+              }
             }
           }
-        }
-        if (should_reinit) {
-          ReInit();
+          if (should_reinit) {
+            ReInit();
+          }
+        } catch (const std::exception &e) {
+          MLOG_ERROR("Failover thread caught exception: {}", e.what());
+        } catch (...) {
+          MLOG_ERROR("Failover thread caught unknown exception");
         }
       }
     });
@@ -245,7 +260,13 @@ error_code_t ClientMessenger::build_connection(const std::string &addr, BuildCon
       return ClntErr::BuildConnectionFailed;
     }
     std::unique_lock lock(ds_ctx->connect_wait_mutex_);
-    ds_ctx->connect_cv_.wait(lock, [&]() { return !ds_ctx->connecting_.load(std::memory_order_acquire); });
+    bool wait_done = ds_ctx->connect_cv_.wait_for(
+        lock, std::chrono::seconds(30),
+        [&]() { return !ds_ctx->connecting_.load(std::memory_order_acquire); });
+    if (!wait_done) {
+      MLOG_WARN("Timed out waiting for in-flight connection to {}", addr);
+      return ClntErr::BuildConnectionFailed;
+    }
     if (ds_ctx->active.load() && ds_ctx->LoadConnection() != nullptr) {
       return CommonErr::OK;
     }
@@ -353,6 +374,11 @@ error_code_t ClientMessenger::call_sync(uint16_t shard_id,
     return ClntErr::ClntLookupShardFailed;
   }
 
+  //FIXME: Disable retry mechanism for modify reqeusts to avoid ABA issues
+  const bool retryable_req = 
+    req_type == static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_GET) ||
+    req_type == static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_LOOKUP);
+
   auto rpc_ctx = ctx->get_rpc_ctx();
   auto retry_delay = std::chrono::milliseconds(100);
   for (auto i = 0; i <= FLAGS_clnt_syncreq_retry_count; ++i) {
@@ -389,6 +415,13 @@ error_code_t ClientMessenger::call_sync(uint16_t shard_id,
       ReconnectByErrors(rpc_ctx, ds_ctx, shard_id, tag);
     } else {
       MLOG_WARN("Transport connection is inactive for shard id {}, data server is {}", shard_id, ds_ctx->ip_port);
+      // Connection already inactive — no point retrying, fail fast
+      break;
+    }
+
+    if (!retryable_req) {
+      MLOG_WARN("Sync request type {} is non-retryable, fail fast after first error", static_cast<uint64_t>(req_type));
+      break;
     }
 
     if (!FLAGS_clnt_syncreq_enable_retry) {
@@ -400,8 +433,12 @@ error_code_t ClientMessenger::call_sync(uint16_t shard_id,
     }
   }
 
-  MLOG_ERROR("Failed to send request after {} retries (sync call)",
-             FLAGS_clnt_syncreq_enable_retry ? FLAGS_clnt_syncreq_retry_count : 0);
+  MLOG_ERROR("Failed to send sync request, type:{}(retryable:{}), enable retry:{}, retry count:{}",
+             static_cast<uint64_t>(req_type),
+             retryable_req ? "Y" : "N",
+             FLAGS_clnt_syncreq_enable_retry ? "Y" : "N",
+             FLAGS_clnt_syncreq_retry_count);
+
   return ClntErr::ClntSendRPCFailed;
 }
 
@@ -550,7 +587,6 @@ error_code_t ClientMessenger::ApplyRouteTableDiff(const QueryShardRoutingTableAl
   std::unordered_set<std::string> live_servers;
   std::vector<std::string> servers_to_connect;
 
-  shard_table_.clear();
   for (const auto &entry : routing.shard_info()) {
     std::string ip = entry.data_server_address().ip();
     uint16_t port = static_cast<uint16_t>(entry.data_server_address().port());
@@ -585,7 +621,8 @@ void ClientMessenger::ReconnectByErrors(std::shared_ptr<sicl::rpc::RpcContext> r
 
   if (rpc_ctx->ErrorCode() == sicl::transport::SICL_ERR_INVALID_STATE ||
       rpc_ctx->ErrorCode() == sicl::transport::SICL_ERR_VERBS_WC_ERROR ||
-      rpc_ctx->ErrorCode() == sicl::transport::SICL_ERR_VERBS_POST_SEND) {
+      rpc_ctx->ErrorCode() == sicl::transport::SICL_ERR_VERBS_POST_SEND ||
+      rpc_ctx->ErrorCode() == sicl::transport::SICL_ERR_TIMEOUT) {
     MLOG_WARN("Encountered transport error {} for shard id {}, will try to reconnect (sync call)",
               rpc_ctx->ErrorCode(),
               shard_id);
@@ -720,7 +757,7 @@ error_code_t ClientMessenger::AsyncPut(const std::string &key,
 #ifdef SIMM_APIPERF
   auto t1 = std::chrono::steady_clock::now();
 #endif
-  call_async<KVPutRequestPB, KVPutResponsePB>(
+  auto ret = call_async<KVPutRequestPB, KVPutResponsePB>(
       shard_id,
       static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_PUT),
       req,
@@ -734,7 +771,7 @@ error_code_t ClientMessenger::AsyncPut(const std::string &key,
             std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
 #endif
 
-  return CommonErr::OK;
+  return ret;
 }
 
 int32_t ClientMessenger::Get(const std::string &key,
@@ -849,7 +886,7 @@ error_code_t ClientMessenger::AsyncGet(const std::string &key,
 #ifdef SIMM_APIPERF
   auto t1 = std::chrono::steady_clock::now();
 #endif
-  call_async<KVGetRequestPB, KVGetResponsePB>(
+  auto ret = call_async<KVGetRequestPB, KVGetResponsePB>(
       shard_id,
       static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_GET),
       req,
@@ -863,7 +900,7 @@ error_code_t ClientMessenger::AsyncGet(const std::string &key,
             std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
 #endif
 
-  return CommonErr::OK;
+  return ret;
 }
 
 error_code_t ClientMessenger::Delete(const std::string &key, std::shared_ptr<simm::common::SimmContext> ctx) {
@@ -927,15 +964,13 @@ error_code_t ClientMessenger::AsyncDelete(const std::string &key,
       cb(new_resp->ret_code());
     }
   };
-  call_async<KVDelRequestPB, KVDelResponsePB>(
+  return call_async<KVDelRequestPB, KVDelResponsePB>(
       shard_id,
       static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_DEL),
       req,
       resp,
       ctx,
       std::move(done));
-
-  return CommonErr::OK;
 }
 
 error_code_t ClientMessenger::Exists(const std::string &key, std::shared_ptr<simm::common::SimmContext> ctx) {
@@ -999,15 +1034,13 @@ error_code_t ClientMessenger::AsyncExists(const std::string &key,
       cb(new_resp->ret_code());
     }
   };
-  call_async<KVLookupRequestPB, KVLookupResponsePB>(
+  return call_async<KVLookupRequestPB, KVLookupResponsePB>(
       shard_id,
       static_cast<sicl::rpc::ReqType>(simm::ds::KVServerRpcType::RPC_CLIENT_KV_LOOKUP),
       req,
       resp,
       ctx,
       std::move(done));
-
-  return CommonErr::OK;
 }
 
 std::vector<error_code_t> ClientMessenger::MultiPut(const std::vector<std::string> &keys,
@@ -1076,10 +1109,10 @@ std::vector<error_code_t> ClientMessenger::MultiExists(const std::vector<std::st
   return multiExistsResults;
 }
 
-inline sicl::transport::TimerTick ClientMessenger::convert_timeout_setting_to_timer_tick(int32_t timeout_ms) {
+sicl::transport::TimerTick ClientMessenger::convert_timeout_setting_to_timer_tick(int32_t timeout_ms) {
   if (timeout_ms < 0) {
-    // if timeout is set to negative value, means wait forever
-    return sicl::transport::TimerTick::TIMER_END;
+    MLOG_WARN("Negative timeout_ms {} clamped to TIMER_60S to prevent infinite wait", timeout_ms);
+    return sicl::transport::TimerTick::TIMER_60S;
   } else if (timeout_ms <= 1) {
     return sicl::transport::TimerTick::TIMER_1MS;
   } else if (timeout_ms <= 3) {
