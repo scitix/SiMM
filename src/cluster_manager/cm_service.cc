@@ -6,6 +6,7 @@
 
 #include "cm_rpc_handler.h"
 #include "cm_service.h"
+#include "common/base/common_types.h"
 #include "common/logging/logging.h"
 #include "common/rpc_handlers/common_rpc_handlers.h"
 #include "proto/cm_clnt_rpcs.pb.h"
@@ -197,6 +198,130 @@ error_code_t ClusterManagerService::StopRPCServices() {
   destory_rpc_fn(inter_rpc_service_);
   destory_rpc_fn(admin_rpc_service_);
 
+  return CommonErr::OK;
+}
+
+error_code_t ClusterManagerService::RegisterAdminHandlers(
+    simm::common::AdminServer* admin_server) {
+  if (admin_server == nullptr || !admin_server->isRunning()) {
+    MLOG_ERROR("RegisterAdminHandlers: AdminServer is null or not running");
+    return CommonErr::InvalidState;
+  }
+
+  admin_server->registerHandler(
+      simm::common::AdminMsgType::CM_STATUS,
+      [this](const std::string& /* payload */) -> std::string {
+        proto::common::AdmCmStatusResponsePB resp;
+        resp.set_ret_code(CommonErr::OK);
+        resp.set_is_running(is_running_.load());
+        resp.set_service_ready(
+            simm::common::ModuleServiceState::GetInstance().IsServiceReady());
+
+        auto allStatus = node_manager_->GetAllNodeStatus();
+        uint32_t aliveCount = 0;
+        uint32_t deadCount = 0;
+        for (const auto& [addr, status] : allStatus) {
+          if (status == simm::common::RUNNING) {
+            ++aliveCount;
+          } else if (status == simm::common::DEAD) {
+            ++deadCount;
+          }
+        }
+        resp.set_alive_node_count(aliveCount);
+        resp.set_dead_node_count(deadCount);
+        resp.set_total_shard_count(shard_manager_->GetTotalShardNum());
+
+        std::string buf;
+        resp.SerializeToString(&buf);
+        return buf;
+      });
+
+  admin_server->registerHandler(
+      simm::common::AdminMsgType::NODE_LIST,
+      [this](const std::string& /* payload */) -> std::string {
+        ListNodesResponsePB resp;
+
+        if (!simm::common::ModuleServiceState::GetInstance().IsServiceReady()) {
+          resp.set_ret_code(CmErr::InitInGracePeriod);
+          std::string buf;
+          resp.SerializeToString(&buf);
+          return buf;
+        }
+
+        const auto nodeStatList = node_manager_->GetAllNodeStatus();
+        const auto nodeResList = node_manager_->GetAllNodeResource();
+
+        std::unordered_map<std::string,
+                           std::shared_ptr<simm::common::NodeResource>> resMap;
+        for (const auto& [addrStr, resource] : nodeResList) {
+          resMap[addrStr] = resource;
+        }
+
+        for (const auto& [addrStr, status] : nodeStatList) {
+          auto nodeAddr = simm::common::NodeAddress::ParseFromString(addrStr);
+          if (!nodeAddr) {
+            continue;
+          }
+          auto* nodeInfo = resp.add_nodes();
+          auto* addrPb = nodeInfo->mutable_node_address();
+          addrPb->set_ip(nodeAddr->node_ip_);
+          addrPb->set_port(nodeAddr->node_port_);
+          nodeInfo->set_node_status(static_cast<int32_t>(status));
+
+          auto resIt = resMap.find(addrStr);
+          if (resIt != resMap.end() && resIt->second) {
+            auto* resPb = nodeInfo->mutable_resource();
+            resPb->set_mem_free_bytes(resIt->second->mem_free_bytes_);
+            resPb->set_mem_total_bytes(resIt->second->mem_total_bytes_);
+            resPb->set_mem_used_bytes(resIt->second->mem_used_bytes_);
+          }
+        }
+
+        resp.set_ret_code(CommonErr::OK);
+        std::string buf;
+        resp.SerializeToString(&buf);
+        return buf;
+      });
+
+  admin_server->registerHandler(
+      simm::common::AdminMsgType::SHARD_LIST,
+      [this](const std::string& /* payload */) -> std::string {
+        QueryShardRoutingTableAllResponsePB resp;
+
+        if (!simm::common::ModuleServiceState::GetInstance().IsServiceReady()) {
+          resp.set_ret_code(CmErr::InitInGracePeriod);
+          std::string buf;
+          resp.SerializeToString(&buf);
+          return buf;
+        }
+
+        auto queryRes = shard_manager_->QueryAllShardRoutingInfos();
+
+        // Group shards by data server address
+        using NodeAddrPtr = std::shared_ptr<simm::common::NodeAddress>;
+        std::unordered_map<NodeAddrPtr, std::vector<shard_id_t>> dsShards;
+        for (const auto& [shardId, nodeAddr] : queryRes) {
+          if (nodeAddr) {
+            dsShards[nodeAddr].push_back(shardId);
+          }
+        }
+        for (const auto& [nodeAddr, shardIds] : dsShards) {
+          auto* entry = resp.add_shard_info();
+          auto* dsAddr = entry->mutable_data_server_address();
+          dsAddr->set_ip(nodeAddr->node_ip_);
+          dsAddr->set_port(nodeAddr->node_port_);
+          for (auto sid : shardIds) {
+            entry->add_shard_ids(sid);
+          }
+        }
+
+        resp.set_ret_code(CommonErr::OK);
+        std::string buf;
+        resp.SerializeToString(&buf);
+        return buf;
+      });
+
+  MLOG_INFO("CM admin handlers registered");
   return CommonErr::OK;
 }
 

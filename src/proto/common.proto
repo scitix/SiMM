@@ -61,3 +61,29 @@ message TraceToggleRequestPB {
 message TraceToggleResponsePB {
   sint32 ret_code = 1;
 }
+
+// DS internal status query (for testing/debugging)
+message AdmDsStatusRequestPB {
+  // empty — query all status fields
+}
+
+message AdmDsStatusResponsePB {
+  sint32 ret_code = 1;
+  bool is_registered = 2;
+  bool cm_ready = 3;
+  uint32 heartbeat_failure_count = 4;
+}
+
+// CM internal status query (for testing/debugging)
+message AdmCmStatusRequestPB {
+  // empty — query all status fields
+}
+
+message AdmCmStatusResponsePB {
+  sint32 ret_code = 1;
+  bool is_running = 2;
+  bool service_ready = 3;
+  uint32 alive_node_count = 4;
+  uint32 dead_node_count = 5;
+  uint32 total_shard_count = 6;
+}

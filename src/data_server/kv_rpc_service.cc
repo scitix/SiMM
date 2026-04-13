@@ -25,7 +25,9 @@
 #include "data_server/kv_hash_table.h"
 #include "data_server/kv_object_pool.h"
 #include "data_server/kv_rpc_handler.h"
+#include "common/admin/admin_server.h"
 #include "data_server/kv_rpc_service.h"
+#include "proto/common.pb.h"
 
 DECLARE_LOG_MODULE("data_server");
 
@@ -883,6 +885,29 @@ void KVRpcService::GetResourceStats(const DataServerResourceRequestPB *req, Data
     info->set_shard_id(s);
     info->set_shard_mem_used_bytes(shard_used_bytes);
   }
+}
+
+error_code_t KVRpcService::RegisterAdminHandlers(simm::common::AdminServer* admin_server) {
+  if (admin_server == nullptr || !admin_server->isRunning()) {
+    MLOG_ERROR("RegisterAdminHandlers: AdminServer is null or not running");
+    return CommonErr::InvalidState;
+  }
+
+  admin_server->registerHandler(
+      simm::common::AdminMsgType::DS_STATUS,
+      [this](const std::string& /* payload */) -> std::string {
+        proto::common::AdmDsStatusResponsePB resp;
+        resp.set_ret_code(CommonErr::OK);
+        resp.set_is_registered(is_registered_.load());
+        resp.set_cm_ready(cm_ready_.load());
+        resp.set_heartbeat_failure_count(heartbeat_failure_count_.load());
+        std::string buf;
+        resp.SerializeToString(&buf);
+        return buf;
+      });
+
+  MLOG_INFO("DS admin handlers registered");
+  return CommonErr::OK;
 }
 
 }  // namespace ds

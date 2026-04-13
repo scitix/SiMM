@@ -1,0 +1,4 @@
+faults:
+  - type: sigkill
+    target: "cm"
+    delay_after_ready_sec: 5

@@ -8,6 +8,7 @@
 #include <gflags/gflags.h>
 #include <folly/init/Init.h>
 
+#include "common/admin/admin_server.h"
 #include "common/base/common_types.h"
 #include "common/errcode/errcode_def.h"
 #include "common/logging/logging.h"
@@ -80,6 +81,12 @@ int main(int argc, char *argv[]) {
 
   // TODO(ytji): load configuration from file, e.g. cm_conf.json
 
+  auto admin_server = std::make_unique<simm::common::AdminServer>(simm::common::kCmAdminUdsBasePath);
+  if (admin_server == nullptr || !admin_server->isRunning()) {
+    MLOG_CRITICAL("Failed to init AdminServer at {}", simm::common::kCmAdminUdsBasePath);
+    return CmErr::InitFailed;
+  }
+
   // Register signal handlers
   MLOG_INFO("Register signal handers for SIGINT/SIGTERM/SIGSEGV");
   std::signal(SIGINT, signalHandler);
@@ -106,6 +113,12 @@ int main(int argc, char *argv[]) {
   rc = cm_service_ptr->Start();
   if (rc != CommonErr::OK) {
     MLOG_CRITICAL("Failed to start ClusterManager service, rc:{}", rc);
+    goto exit;
+  }
+
+  rc = cm_service_ptr->RegisterAdminHandlers(admin_server.get());
+  if (rc != CommonErr::OK) {
+    MLOG_CRITICAL("Failed to register CM admin handlers, rc:{}", rc);
     goto exit;
   }
 

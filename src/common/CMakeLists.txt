@@ -1,3 +1,4 @@
+add_subdirectory(admin)
 add_subdirectory(errcode)
 add_subdirectory(flags)
 add_subdirectory(logging)
@@ -9,6 +10,7 @@ add_subdirectory(hashkit)
 add_subdirectory(metrics)
 
 set(SIMM_COMMON_SOURCES
+    ${COMMON_ADMIN_SRC}
     ${ERRCODE_SRC}
     ${COMMON_FLAG_SRC}
     ${COMMON_LOGGING_SRC}

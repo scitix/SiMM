@@ -45,6 +45,7 @@
 #include "rpc/rpc_context.h"
 #include "transport/types.h"
 
+#include "common/admin/admin_msg_types.h"
 #include "common/errcode/errcode_def.h"
 #include "common/logging/logging.h"
 #include "common/trace/trace_server.h"
@@ -86,13 +87,7 @@ class AdminChannel {
                                        const std::shared_ptr<sicl::rpc::RpcContext> &)> done_cb) = 0;
 };
 
-// Message type for UDS admin channel
-enum class AdminMsgType : uint16_t {
-  TRACE_TOGGLE = 1,
-  GFLAG_LIST = 2,
-  GFLAG_GET = 3,
-  GFLAG_SET = 4,
-};
+using simm::common::AdminMsgType;
 
 // Unix domain socket implementation
 class UdsChannel : public AdminChannel {
@@ -333,6 +328,61 @@ static void InitRpcClientAndContext(std::unique_ptr<sicl::rpc::SiRPC> &rpc_clien
   ctx_shared = std::shared_ptr<sicl::rpc::RpcContext>(ctx_p);
 }
 
+// Resolve process name to PID via pgrep.
+// Returns the PID on success.
+// Prints error and exits if not found or ambiguous.
+static int resolveProcessPid(const std::string &proc_name) {
+  std::string cmd = "pgrep -x " + proc_name;
+  FILE *fp = popen(cmd.c_str(), "r");
+  if (!fp) {
+    std::cerr << "Error: failed to run pgrep\n";
+    exit(1);
+  }
+  std::vector<int> pids;
+  char buf[64];
+  while (fgets(buf, sizeof(buf), fp)) {
+    std::string line(buf);
+    // trim whitespace
+    line.erase(line.find_last_not_of(" \t\n\r") + 1);
+    if (!line.empty()) {
+      try {
+        pids.push_back(std::stoi(line));
+      } catch (...) {}
+    }
+  }
+  pclose(fp);
+
+  if (pids.empty()) {
+    std::cerr << "Error: " << proc_name << ": process not found\n";
+    exit(1);
+  }
+  if (pids.size() > 1) {
+    std::cerr << "Error: " << proc_name << ": ambiguous, found "
+              << pids.size() << " processes (pids:";
+    for (int p : pids) {
+      std::cerr << " " << p;
+    }
+    std::cerr << ")\n";
+    exit(1);
+  }
+  return pids[0];
+}
+
+// Map process name to UDS socket base path.
+static std::string procToSocketPath(const std::string &proc_name, int pid) {
+  std::string base;
+  if (proc_name == "cluster_manager") {
+    base = simm::common::kCmAdminUdsBasePath;
+  } else if (proc_name == "data_server") {
+    base = simm::common::kDsAdminUdsBasePath;
+  } else {
+    std::cerr << "Error: unknown process name: " << proc_name
+              << ". Expected 'cluster_manager' or 'data_server'\n";
+    exit(1);
+  }
+  return base + "." + std::to_string(pid) + ".sock";
+}
+
 static void CallbackNode(const std::string &operation,
                          const std::string &name,
                          const std::string &value,
@@ -346,6 +396,8 @@ static void CallbackNode(const std::string &operation,
   InitRpcClientAndContext(rpc_client, ctx_shared);
 
   if (operation == "list" || operation == "summary") {
+    ListNodesRequestPB req;
+    auto resp = new ListNodesResponsePB();
     auto done_cb = [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
       if (ctx->Failed()) {
         std::cerr << "Error: RPC failed, err: " << ctx->ErrorText() << "\n";
@@ -482,9 +534,6 @@ static void CallbackNode(const std::string &operation,
       delete static_cast<const ListNodesResponsePB *>(rsp);
       done_latch.count_down();
     };
-
-    ListNodesRequestPB req;
-    auto resp = new ListNodesResponsePB();
     rpc_client->SendRequest(ip,
                             port,
                             static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_NODE_REQ),
@@ -603,6 +652,13 @@ static void CallbackNode(const std::string &operation,
       }
     }
 
+    SetNodeStatusRequestPB req;
+    auto *node_addr = req.mutable_node();
+    node_addr->set_ip(node_ip);
+    node_addr->set_port(std::stoi(node_port_str));
+    req.set_node_status(status_value);
+
+    auto resp = new SetNodeStatusResponsePB();
     auto done_cb = [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
       if (ctx->Failed()) {
         LOG_ERROR("RPC failed, err:{}", ctx->ErrorText());
@@ -622,16 +678,9 @@ static void CallbackNode(const std::string &operation,
           std::cerr << "Error: SetNodeStatus RPC failed with ret_code: " << response->ret_code() << "\n";
         }
       }
+      delete resp;
       done_latch.count_down();
     };
-
-    SetNodeStatusRequestPB req;
-    auto *node_addr = req.mutable_node();
-    node_addr->set_ip(node_ip);
-    node_addr->set_port(std::stoi(node_port_str));
-    req.set_node_status(status_value);
-
-    auto resp = new SetNodeStatusResponsePB();
     rpc_client->SendRequest(ip,
                             port,
                             static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_SET_NODE_STATUS_REQ),
@@ -642,6 +691,91 @@ static void CallbackNode(const std::string &operation,
   } else {
     std::cerr << "Unsupported operation for node: " << operation << "\n";
     exit(1);
+  }
+
+  done_latch.wait();
+}
+
+static void CallbackDsStatus(AdminChannel &channel) {
+  // Query DS internal status via UDS (is_registered, cm_ready, heartbeat_failure_count)
+  proto::common::AdmDsStatusRequestPB req;
+  auto *resp = new proto::common::AdmDsStatusResponsePB();
+  std::latch done_latch(1);
+
+  if (!channel.Call(
+          req,
+          resp,
+          [&](const google::protobuf::Message *rsp,
+              const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+            const auto *response = dynamic_cast<const proto::common::AdmDsStatusResponsePB *>(rsp);
+            if (ctx && ctx->Failed()) {
+              std::cerr << "Error: UDS call failed, err: " << ctx->ErrorText() << "\n";
+            } else if (response && response->ret_code() == CommonErr::OK) {
+              tabulate::Table tbl;
+              tbl.format().locale("C");
+              tbl.add_row({"Field", "Value"});
+              tbl.add_row({"is_registered", response->is_registered() ? "true" : "false"});
+              tbl.add_row({"cm_ready", response->cm_ready() ? "true" : "false"});
+              tbl.add_row({"heartbeat_failure_count",
+                           std::to_string(response->heartbeat_failure_count())});
+              tbl.column(0).format().width(28).font_style({tabulate::FontStyle::bold});
+              tbl.column(1).format().width(20);
+              tbl.row(0).format().font_style({tabulate::FontStyle::bold});
+              std::cout << tbl << std::endl;
+            } else {
+              std::cerr << "Error: DsStatus failed with ret_code: "
+                        << (response ? response->ret_code() : -1) << "\n";
+            }
+            done_latch.count_down();
+            delete resp;
+          })) {
+    std::cerr << "ds status: channel.Call() failed\n";
+    delete resp;
+    return;
+  }
+
+  done_latch.wait();
+}
+
+static void CallbackCmStatus(AdminChannel &channel) {
+  proto::common::AdmCmStatusRequestPB req;
+  auto *resp = new proto::common::AdmCmStatusResponsePB();
+  std::latch done_latch(1);
+
+  if (!channel.Call(
+          req,
+          resp,
+          [&](const google::protobuf::Message *rsp,
+              const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+            const auto *response = dynamic_cast<const proto::common::AdmCmStatusResponsePB *>(rsp);
+            if (ctx && ctx->Failed()) {
+              std::cerr << "Error: UDS call failed, err: " << ctx->ErrorText() << "\n";
+            } else if (response && response->ret_code() == CommonErr::OK) {
+              tabulate::Table tbl;
+              tbl.format().locale("C");
+              tbl.add_row({"Field", "Value"});
+              tbl.add_row({"is_running", response->is_running() ? "true" : "false"});
+              tbl.add_row({"service_ready", response->service_ready() ? "true" : "false"});
+              tbl.add_row({"alive_node_count",
+                           std::to_string(response->alive_node_count())});
+              tbl.add_row({"dead_node_count",
+                           std::to_string(response->dead_node_count())});
+              tbl.add_row({"total_shard_count",
+                           std::to_string(response->total_shard_count())});
+              tbl.column(0).format().width(28).font_style({tabulate::FontStyle::bold});
+              tbl.column(1).format().width(20);
+              tbl.row(0).format().font_style({tabulate::FontStyle::bold});
+              std::cout << tbl << std::endl;
+            } else {
+              std::cerr << "Error: CmStatus failed with ret_code: "
+                        << (response ? response->ret_code() : -1) << "\n";
+            }
+            done_latch.count_down();
+            delete resp;
+          })) {
+    std::cerr << "cm status: channel.Call() failed\n";
+    delete resp;
+    return;
   }
 
   done_latch.wait();
@@ -660,6 +794,8 @@ static void CallbackShard(const std::string &operation,
   InitRpcClientAndContext(rpc_client, ctx_shared);
 
   if (operation == "list") {
+    QueryShardRoutingTableAllRequestPB req;
+    auto resp = new QueryShardRoutingTableAllResponsePB();
     auto done_cb = [&](const google::protobuf::Message *rsp, const std::shared_ptr<sicl::rpc::RpcContext> ctx) {
       if (ctx->Failed()) {
         LOG_ERROR("RPC failed, err:{}", ctx->ErrorText());
@@ -719,10 +855,9 @@ static void CallbackShard(const std::string &operation,
           std::cerr << "Error: ListShards RPC failed with ret_code: " << response->ret_code() << "\n";
         }
       }
+      delete resp;
       done_latch.count_down();
     };
-    QueryShardRoutingTableAllRequestPB req;
-    auto resp = new QueryShardRoutingTableAllResponsePB();
     rpc_client->SendRequest(ip,
                             port,
                             static_cast<sicl::rpc::ReqType>(simm::common::CommonRpcType::RPC_LIST_SHARD_REQ),
@@ -733,6 +868,152 @@ static void CallbackShard(const std::string &operation,
   } else {
     std::cerr << "Unsupported operation for shard: " << operation << "\n";
     exit(1);
+  }
+
+  done_latch.wait();
+}
+
+static void CallbackNodeByUds(AdminChannel &channel, bool verbose) {
+  std::latch done_latch(1);
+
+  ListNodesRequestPB req;
+  auto *resp = new ListNodesResponsePB();
+  if (!channel.Call(
+          req, resp,
+          [&](const google::protobuf::Message *rsp,
+              const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+            const auto *response = dynamic_cast<const ListNodesResponsePB *>(rsp);
+            if (ctx && ctx->Failed()) {
+              std::cerr << "Error: UDS call failed, err: " << ctx->ErrorText() << "\n";
+            } else if (response && response->ret_code() == CommonErr::OK) {
+              tabulate::Table tbl;
+              tbl.format().locale("C");
+
+              if (verbose) {
+                tbl.add_row({"Node Address", "Status", "Total Memory (MB)",
+                             "Free Memory (MB)", "Used Memory (MB)"})
+                    .format()
+                    .width(20);
+                for (int i = 0; i < response->nodes_size(); ++i) {
+                  const auto &node_info = response->nodes(i);
+                  const auto &node_addr = node_info.node_address();
+                  std::string addr_str =
+                      node_addr.ip() + ":" + std::to_string(node_addr.port());
+                  std::string_view status_str =
+                      simm::common::NodeStatusToString(
+                          static_cast<simm::common::NodeStatus>(node_info.node_status()));
+                  std::string total_mem =
+                      std::to_string(node_info.resource().mem_total_bytes() / (1024 * 1024));
+                  std::string free_mem =
+                      std::to_string(node_info.resource().mem_free_bytes() / (1024 * 1024));
+                  std::string used_mem =
+                      std::to_string(node_info.resource().mem_used_bytes() / (1024 * 1024));
+                  tbl.add_row({addr_str, status_str, total_mem, free_mem, used_mem});
+                }
+                tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
+                tbl.column(1).format().width(12);
+                tbl.column(2).format().width(18);
+                tbl.column(3).format().width(18);
+                tbl.column(4).format().width(18);
+                tbl.row(0).format().font_style({tabulate::FontStyle::bold});
+              } else {
+                tbl.add_row({"Node Address", "Status"}).format().width(20);
+                for (int i = 0; i < response->nodes_size(); ++i) {
+                  const auto &node_info = response->nodes(i);
+                  const auto &node_addr = node_info.node_address();
+                  std::string addr_str =
+                      node_addr.ip() + ":" + std::to_string(node_addr.port());
+                  std::string status_str =
+                      (node_info.node_status() == 1) ? "RUNNING" : "DEAD";
+                  tbl.add_row({addr_str, status_str});
+                }
+                tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
+                tbl.column(1).format().width(12);
+                tbl.row(0).format().font_style({tabulate::FontStyle::bold});
+              }
+              std::cout << tbl << std::endl;
+            } else {
+              std::cerr << "Error: ListNodes failed with ret_code: "
+                        << (response ? response->ret_code() : -1) << "\n";
+            }
+            done_latch.count_down();
+            delete resp;
+          })) {
+    std::cerr << "node list: channel.Call() failed\n";
+    delete resp;
+    return;
+  }
+
+  done_latch.wait();
+}
+
+static void CallbackShardByUds(AdminChannel &channel, bool verbose) {
+  std::latch done_latch(1);
+
+  QueryShardRoutingTableAllRequestPB req;
+  auto *resp = new QueryShardRoutingTableAllResponsePB();
+  if (!channel.Call(
+          req, resp,
+          [&](const google::protobuf::Message *rsp,
+              const std::shared_ptr<sicl::rpc::RpcContext> &ctx) {
+            const auto *response =
+                dynamic_cast<const QueryShardRoutingTableAllResponsePB *>(rsp);
+            if (ctx && ctx->Failed()) {
+              std::cerr << "Error: UDS call failed, err: " << ctx->ErrorText() << "\n";
+            } else if (response && response->ret_code() == CommonErr::OK) {
+              tabulate::Table tbl;
+              tbl.format().locale("C");
+              if (verbose) {
+                tbl.add_row({"Data Server", "Shard IDs"}).format().width(30);
+                std::map<std::string, std::vector<uint32_t>> ds_shards;
+                for (int i = 0; i < response->shard_info_size(); ++i) {
+                  const auto &shard_entry = response->shard_info(i);
+                  const auto &ds_addr = shard_entry.data_server_address();
+                  std::string ds_str =
+                      ds_addr.ip() + ":" + std::to_string(ds_addr.port());
+                  for (int j = 0; j < shard_entry.shard_ids_size(); ++j) {
+                    ds_shards[ds_str].push_back(shard_entry.shard_ids(j));
+                  }
+                }
+                for (const auto &[ds_str, shard_ids] : ds_shards) {
+                  std::string shard_ids_str;
+                  for (size_t j = 0; j < shard_ids.size(); ++j) {
+                    if (j > 0) shard_ids_str += ", ";
+                    shard_ids_str += std::to_string(shard_ids[j]);
+                  }
+                  tbl.add_row({ds_str, shard_ids_str});
+                }
+                tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
+                tbl.column(1).format().width(50);
+                tbl.row(0).format().font_style({tabulate::FontStyle::bold});
+              } else {
+                tbl.add_row({"Data Server", "Shard Count"}).format().width(30);
+                std::map<std::string, int> ds_shard_count;
+                for (int i = 0; i < response->shard_info_size(); ++i) {
+                  const auto &shard_entry = response->shard_info(i);
+                  const auto &ds_addr = shard_entry.data_server_address();
+                  std::string ds_str =
+                      ds_addr.ip() + ":" + std::to_string(ds_addr.port());
+                  ds_shard_count[ds_str] += shard_entry.shard_ids_size();
+                }
+                for (const auto &[ds_str, count] : ds_shard_count) {
+                  tbl.add_row({ds_str, std::to_string(count)});
+                }
+                tbl.column(0).format().width(20).font_style({tabulate::FontStyle::bold});
+                tbl.column(1).format().width(15);
+                tbl.row(0).format().font_style({tabulate::FontStyle::bold});
+              }
+              std::cout << tbl << std::endl;
+            } else {
+              std::cerr << "Error: ListShards failed with ret_code: "
+                        << (response ? response->ret_code() : -1) << "\n";
+            }
+            done_latch.count_down();
+            delete resp;
+          })) {
+    std::cerr << "shard list: channel.Call() failed\n";
+    delete resp;
+    return;
   }
 
   done_latch.wait();
@@ -880,6 +1161,7 @@ static void CallbackTrace(AdminChannel &channel, const std::string &value, bool 
             delete resp;
           })) {
     std::cerr << "trace: channel.Call() failed" << std::endl;
+    delete resp;
     return;
   }
   done_latch.wait();
@@ -889,6 +1171,7 @@ int main(int argc, char *argv[]) {
   std::string ip;
   int port;
   int pid;
+  std::string proc;
   std::string subcommand;
   std::string resource_type;
   std::string operation;
@@ -897,9 +1180,11 @@ int main(int argc, char *argv[]) {
 
   po::options_description desc("SiMMCtl - SiMM RPC Management Tool");
   desc.add_options()("help,h", "Show help message")(
-      "ip,i", po::value<std::string>(&ip)->required(), "Target Cluster Manager IP address")(
-      "port,p", po::value<int>(&port)->default_value(30002), "Target Cluster Manager port")(
-      "pid,P", po::value<int>(&pid)->default_value(-1), "Target Client PID, used when tracing is enabled")(
+      "ip,i", po::value<std::string>(&ip)->default_value(""), "Target IP address for RPC-based commands")(
+      "port,p", po::value<int>(&port)->default_value(30002), "Target port for RPC-based commands")(
+      "pid,P", po::value<int>(&pid)->default_value(-1), "Target process PID for UDS-based commands")(
+      "proc", po::value<std::string>(&proc)->default_value(""),
+       "Target process name for UDS-based commands (cluster_manager or data_server)")(
       "verbose,v", po::bool_switch(&verbose), "Enable verbose output");
 
   po::options_description hidden("Hidden options");
@@ -924,21 +1209,50 @@ int main(int argc, char *argv[]) {
                 << "  node summary [OPTIONS]        Show cluster-wide node resource summary\n"
                 << "  node stat <IP:PORT>           Show detailed resource stats for one node\n"
                 << "  node set <IP:PORT> <STATUS>   Set node status (0=DEAD, 1=RUNNING)\n"
+                << "  cm status                     Query CM internal status via UDS\n"
+                << "  ds status                     Query DS internal status via UDS\n"
                 << "  shard list [OPTIONS]          List all shards\n"
                 << "  gflag list [OPTIONS]          List all gflags\n"
                 << "  gflag get <NAME> [OPTIONS]    Get a gflag value\n"
                 << "  gflag set <NAME> <VALUE>      Set a gflag value\n"
-                << "  trace <STATUS>                Set tracing status (0=OFF, 1=ON)\n";
+                << "  trace <STATUS>                Set tracing status (0=OFF, 1=ON)\n"
+                << "\nUDS options (--pid or --proc, mutually exclusive):\n"
+                << "  --pid <PID>                   Target process by PID\n"
+                << "  --proc <NAME>                 Target process by name (cluster_manager or data_server)\n";
       return 0;
     }
 
     po::notify(vm);
+
+    // --pid and --proc are mutually exclusive
+    if (pid != -1 && !proc.empty()) {
+      std::cerr << "Error: --pid and --proc are mutually exclusive\n";
+      return 1;
+    }
+
+    // Resolve --proc to --pid
+    if (!proc.empty()) {
+      if (proc != "cluster_manager" && proc != "data_server") {
+        std::cerr << "Error: --proc must be 'cluster_manager' or 'data_server'\n";
+        return 1;
+      }
+      pid = resolveProcessPid(proc);
+    }
 
     if (!vm.count("subcommand")) {
       std::cerr << "Error: No subcommand specified\n";
       std::cerr << "Use 'simmctl -h' for help\n";
       return 1;
     }
+
+    // Determine UDS socket path from pid and subcommand/proc context
+    auto buildUdsSocketPath = [&](const std::string &basePath) -> std::string {
+      if (!proc.empty()) {
+        return procToSocketPath(proc, pid);
+      }
+      // When using --pid, infer from subcommand context
+      return basePath + "." + std::to_string(pid) + ".sock";
+    };
 
     // Parse subcommand format: "resource_type operation"
     if (subcommand == "node") {
@@ -947,26 +1261,87 @@ int main(int argc, char *argv[]) {
         return 1;
       }
       operation = args[0];
-      if (operation == "list") {
-        CallbackNode("list", "", "", ip, port, verbose);
-      } else if (operation == "summary") {
-        CallbackNode("summary", "", "", ip, port, verbose);
-      } else if (operation == "stat") {
-        if (args.size() < 2) {
-          std::cerr << "Error: node stat requires argument: <IP:PORT>\n";
+      if (pid != -1) {
+        // UDS mode (node list only)
+        if (operation == "list") {
+          std::string socket_path = buildUdsSocketPath(simm::common::kCmAdminUdsBasePath);
+          auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::NODE_LIST);
+          if (!uds_channel->Init()) {
+            std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
+            return 1;
+          }
+          CallbackNodeByUds(*uds_channel, verbose);
+        } else {
+          std::cerr << "Error: Unknown node operation for UDS mode: " << operation << "\n";
           return 1;
         }
-        CallbackNode("stat", args[1], "", ip, port, verbose);
-      } else if (operation == "set") {
-        if (args.size() < 3) {
-          std::cerr << "Error: node set requires arguments: <IP:PORT> <STATUS>\n";
-          return 1;
-        }
-        std::string node_addr = args[1];
-        std::string node_status = args[2];
-        CallbackNode("set", node_addr, node_status, ip, port, verbose);
       } else {
-        std::cerr << "Error: Unknown node operation: " << operation << "\n";
+        // RPC mode
+        if (operation == "list") {
+          CallbackNode("list", "", "", ip, port, verbose);
+        } else if (operation == "summary") {
+          CallbackNode("summary", "", "", ip, port, verbose);
+        } else if (operation == "stat") {
+          if (args.size() < 2) {
+            std::cerr << "Error: node stat requires argument: <IP:PORT>\n";
+            return 1;
+          }
+          CallbackNode("stat", args[1], "", ip, port, verbose);
+        } else if (operation == "set") {
+          if (args.size() < 3) {
+            std::cerr << "Error: node set requires arguments: <IP:PORT> <STATUS>\n";
+            return 1;
+          }
+          std::string node_addr = args[1];
+          std::string node_status = args[2];
+          CallbackNode("set", node_addr, node_status, ip, port, verbose);
+        } else {
+          std::cerr << "Error: Unknown node operation: " << operation << "\n";
+          return 1;
+        }
+      }
+    } else if (subcommand == "cm") {
+      if (args.empty()) {
+        std::cerr << "Error: cm subcommand requires an operation (status)\n";
+        return 1;
+      }
+      operation = args[0];
+      if (operation == "status") {
+        if (pid == -1) {
+          std::cerr << "Error: cm status requires --pid or --proc\n";
+          return 1;
+        }
+        std::string socket_path = buildUdsSocketPath(simm::common::kCmAdminUdsBasePath);
+        auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::CM_STATUS);
+        if (!uds_channel->Init()) {
+          std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
+          return 1;
+        }
+        CallbackCmStatus(*uds_channel);
+      } else {
+        std::cerr << "Error: Unknown cm operation: " << operation << "\n";
+        return 1;
+      }
+    } else if (subcommand == "ds") {
+      if (args.empty()) {
+        std::cerr << "Error: ds subcommand requires an operation (status)\n";
+        return 1;
+      }
+      operation = args[0];
+      if (operation == "status") {
+        if (pid == -1) {
+          std::cerr << "Error: ds status requires --pid or --proc\n";
+          return 1;
+        }
+        std::string socket_path = buildUdsSocketPath(simm::common::kDsAdminUdsBasePath);
+        auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::DS_STATUS);
+        if (!uds_channel->Init()) {
+          std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
+          return 1;
+        }
+        CallbackDsStatus(*uds_channel);
+      } else {
+        std::cerr << "Error: Unknown ds operation: " << operation << "\n";
         return 1;
       }
     } else if (subcommand == "shard") {
@@ -976,7 +1351,19 @@ int main(int argc, char *argv[]) {
       }
       operation = args[0];
       if (operation == "list") {
-        CallbackShard("list", "", "", ip, port, verbose);
+        if (pid != -1) {
+          // UDS mode
+          std::string socket_path = buildUdsSocketPath(simm::common::kCmAdminUdsBasePath);
+          auto uds_channel = std::make_unique<UdsChannel>(socket_path, AdminMsgType::SHARD_LIST);
+          if (!uds_channel->Init()) {
+            std::cerr << "Error: failed to connect to admin socket: " << socket_path << "\n";
+            return 1;
+          }
+          CallbackShardByUds(*uds_channel, verbose);
+        } else {
+          // RPC mode (original code)
+          CallbackShard("list", "", "", ip, port, verbose);
+        }
       } else {
         std::cerr << "Error: Unknown shard operation: " << operation << "\n";
         return 1;
@@ -1017,7 +1404,10 @@ int main(int argc, char *argv[]) {
         }
         channel_ptr = std::move(rpc_channel);
       } else {
-        std::string socket_path = "/run/simm/simm_trace." + std::to_string(pid) + ".sock";
+        // When --proc is used, route through admin socket; otherwise legacy trace socket
+        std::string socket_path = proc.empty()
+            ? "/run/simm/simm_trace." + std::to_string(pid) + ".sock"
+            : procToSocketPath(proc, pid);
         AdminMsgType msg_type;
         if (subcommand == "trace") {
           msg_type = AdminMsgType::TRACE_TOGGLE;

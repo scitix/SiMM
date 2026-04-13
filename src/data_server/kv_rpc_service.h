@@ -42,6 +42,7 @@ DECLARE_uint32(busy_wait_timeout_us);
 DECLARE_string(ds_logical_node_id);
 
 namespace simm {
+namespace common { class AdminServer; }
 namespace ds {
 
 class KVRpcService {
@@ -79,6 +80,10 @@ class KVRpcService {
 
   // Get resource stats info
   void GetResourceStats(const DataServerResourceRequestPB *req, DataServerResourceResponsePB *rsp);
+
+  // Register DS-specific admin handlers to the UDS AdminServer.
+  // Called from kv_server_main after service is initialized.
+  error_code_t RegisterAdminHandlers(simm::common::AdminServer* admin_server);
 
  private:
   error_code_t StartRPCServices();

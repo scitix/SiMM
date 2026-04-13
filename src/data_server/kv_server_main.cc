@@ -9,6 +9,7 @@
 #include <gflags/gflags.h>
 #include <gflags/gflags_declare.h>
 
+#include "common/admin/admin_server.h"
 #include "common/errcode/errcode_def.h"
 #include "common/logging/logging.h"
 #include "common/version/version_info.h"
@@ -77,6 +78,12 @@ int main(int argc, char *argv[]) {
 
   // TODO: load configuration file
 
+  auto admin_server = std::make_unique<simm::common::AdminServer>(simm::common::kDsAdminUdsBasePath);
+  if (admin_server == nullptr || !admin_server->isRunning()) {
+    MLOG_ERROR("Failed to init AdminServer at {}", simm::common::kDsAdminUdsBasePath);
+    return -1;
+  }
+
   // Register signal handlers and save previous ones
   MLOG_INFO("Register signal handers...");
   std::signal(SIGINT, signalHandler);
@@ -99,6 +106,12 @@ int main(int argc, char *argv[]) {
   rc = server->Start();
   if (rc != CommonErr::OK) {
     MLOG_ERROR("DataServer starts failed, rc:{}", rc);
+    return -1;
+  }
+
+  rc = server->RegisterAdminHandlers(admin_server.get());
+  if (rc != CommonErr::OK) {
+    MLOG_ERROR("Failed to register DS admin handlers, rc:{}", rc);
     return -1;
   }
 

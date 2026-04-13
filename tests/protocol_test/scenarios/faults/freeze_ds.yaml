@@ -1,0 +1,5 @@
+faults:
+  - type: sigstop
+    target: "ds:0"
+    delay_after_ready_sec: 5
+    duration_sec: 15
