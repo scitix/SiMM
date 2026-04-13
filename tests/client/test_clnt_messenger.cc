@@ -784,7 +784,7 @@ TEST_F(ClientMessengerUnitTest, GetCmAddressUsesFlagToSkipK8SLookup) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Fix 1: Async 假成功 — call_async must propagate errors to callers
+// Fix 1: Async false-success — call_async must propagate errors to callers
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST_F(ClientMessengerUnitTest, CallAsyncReturnsErrorWhenShardNotFound) {

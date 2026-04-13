@@ -136,7 +136,7 @@ uint64_t GetMapsCount(pid_t pid) {
   std::string maps_file = "/proc/" + std::to_string(pid) + "/maps";
   std::ifstream file(maps_file);
 
-  // 遍历文件的行数
+  // Count the number of lines in the file
   uint64_t maps_count = 0;
   std::string line;
   while (std::getline(file, line)) {

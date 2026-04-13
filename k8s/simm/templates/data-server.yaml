@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  ##定义headless service名，用于关联到每个pod资源创建DNS资源记录
+  ## Define headless service name, used to create DNS records for each pod
   name: simm-data-svc
   {{ if .Values.namespace }}
   namespace: {{ .Values.namespace }}
@@ -25,17 +25,17 @@ spec:
     {{ end }}
 ---
 apiVersion: apps/v1
-kind: StatefulSet #定义资源类型
-metadata: #定义资源的元数据信息, 比如资源的名称、namespace、标签等信息
-  name: simm-data-svc #定义资源的名字，在同一个namespace空间中必须是唯一的
+kind: StatefulSet # Resource type
+metadata: # Resource metadata (name, namespace, labels, etc.)
+  name: simm-data-svc # Resource name, must be unique within the namespace
   {{ if .Values.namespace }}
   namespace: {{ .Values.namespace }}
   {{ end }}
-spec: #定义资源需要的参数属性
-  # 该serviceName就是上面headless service的name，指定此StatefulSet属于哪个headless service
+spec: # Resource spec
+  # serviceName references the headless service above, binding this StatefulSet to it
   serviceName: simm-data-svc
   replicas: {{ .Values.replicaCount }}
-  selector: #定义标签选择器
+  selector: # Label selector
     matchLabels:
       {{ if .Values.namespace }}
       app: app-{{ .Values.namespace }}-simm-data-svc
@@ -43,7 +43,7 @@ spec: #定义资源需要的参数属性
       app: app-simm-data-svc
       {{ end }}
   podManagementPolicy: Parallel
-  template: #定义pod templete
+  template: # Pod template
     metadata:
       {{- with .Values.podAnnotations }}
       annotations:
