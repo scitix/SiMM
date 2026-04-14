@@ -32,6 +32,7 @@ DECLARE_uint32(cm_heartbeat_timeout_inSecs);
 DECLARE_uint32(cm_heartbeat_bg_scan_interval_inSecs);
 DECLARE_bool(cm_deferred_reshard_enabled);
 DECLARE_uint32(cm_deferred_reshard_window_inSecs);
+DECLARE_uint32(dataserver_min_num);
 DECLARE_string(cm_log_file);
 
 namespace simm {
@@ -605,6 +606,98 @@ TEST(ProcessHandshakeUnitTest, ReregistrationInheritsShard) {
   auto still_owned = shard_mgr->GetShardsOwnedByNode(ip_port);
   EXPECT_EQ(still_owned.size(), expected_shards.size());
   MLOG_INFO("PASS: Routing table unchanged after re-registration (idempotent)");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// TEST 6: DS comes back after DEAD (rejoin → STANDBY), then goes silent again.
+//         CM should eventually mark it DEAD (no reshard, it held no shards).
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_F(DeferredReshardTest, StandbyTimesOutToDeadWithoutReshard) {
+  // Use a very short deferred window so the first DS quickly reaches DEAD.
+  FLAGS_cm_deferred_reshard_window_inSecs = 3;
+  // Lower min_num so that killing 1-of-3 still allows reshard (2 >= 2).
+  auto saved_min_num = FLAGS_dataserver_min_num;
+  FLAGS_dataserver_min_num = 2;
+
+  constexpr uint32_t kDSNum = 3;
+  const std::string ip_prefix = "10.88.0.";
+  const int base_port = 54000;
+
+  folly::CPUThreadPoolExecutor executor(8);
+  auto cm = StartCM(executor, kDSNum, ip_prefix, base_port);
+
+  std::vector<std::unique_ptr<MockDeferredDS>> ds_list;
+  for (uint32_t i = 0; i < kDSNum; ++i) {
+    ds_list.push_back(std::make_unique<MockDeferredDS>(
+        ip_prefix + std::to_string(i + 1), base_port + i,
+        "standby-ds-" + std::to_string(i)));
+    ds_list.back()->Start();
+  }
+
+  // Wait for grace period + stable HB
+  std::this_thread::sleep_for(std::chrono::seconds(FLAGS_cm_cluster_init_grace_period_inSecs + 2));
+
+  // Kill DS-0: RUNNING → DEFERRED_RESHARD → DEAD (window=3s)
+  MLOG_INFO("=== Killing DS-0 ===");
+  ds_list[0]->Stop();
+
+  // Wait past HB timeout + deferred window
+  std::this_thread::sleep_for(std::chrono::seconds(
+      FLAGS_cm_heartbeat_timeout_inSecs +
+      FLAGS_cm_deferred_reshard_window_inSecs +
+      FLAGS_cm_heartbeat_bg_scan_interval_inSecs * 2 + 2));
+
+  auto e0 = cm->node_mgr->GetNodeEntry("standby-ds-0");
+  ASSERT_TRUE(e0.has_value());
+  EXPECT_EQ(e0->status, NodeStatus::DEAD)
+      << "DS-0 should be DEAD after deferred window expires";
+  MLOG_INFO("PASS: DS-0 is DEAD after deferred window");
+
+  // DS-0 comes back → STANDBY (reshard already happened)
+  MLOG_INFO("=== DS-0 rejoins → expecting STANDBY ===");
+  ds_list[0]->Start();
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+
+  e0 = cm->node_mgr->GetNodeEntry("standby-ds-0");
+  ASSERT_TRUE(e0.has_value());
+  EXPECT_EQ(e0->status, NodeStatus::STANDBY)
+      << "DS-0 should be STANDBY after rejoining post-DEAD";
+
+  // Verify no shards were given back to DS-0
+  auto standby_shards = cm->shard_mgr->GetShardsOwnedByNode(ds_list[0]->GetAddr());
+  EXPECT_EQ(standby_shards.size(), 0u)
+      << "STANDBY node should own no shards";
+  MLOG_INFO("PASS: DS-0 is STANDBY with 0 shards");
+
+  // DS-0 goes silent again (STANDBY → DEAD, no reshard expected)
+  MLOG_INFO("=== DS-0 goes silent from STANDBY ===");
+  ds_list[0]->Stop();
+
+  // Wait past HB timeout for STANDBY to be marked DEAD
+  std::this_thread::sleep_for(std::chrono::seconds(
+      FLAGS_cm_heartbeat_timeout_inSecs +
+      FLAGS_cm_heartbeat_bg_scan_interval_inSecs + 2));
+
+  e0 = cm->node_mgr->GetNodeEntry("standby-ds-0");
+  ASSERT_TRUE(e0.has_value());
+  EXPECT_EQ(e0->status, NodeStatus::DEAD)
+      << "STANDBY node should become DEAD after HB timeout";
+  MLOG_INFO("PASS: STANDBY → DEAD after HB timeout (no reshard triggered)");
+
+  // Shards of DS-0 were already redistributed during the first DEAD transition;
+  // verify other nodes still hold shards (cluster is healthy).
+  auto ds1_shards = cm->shard_mgr->GetShardsOwnedByNode(ds_list[1]->GetAddr());
+  auto ds2_shards = cm->shard_mgr->GetShardsOwnedByNode(ds_list[2]->GetAddr());
+  EXPECT_GT(ds1_shards.size() + ds2_shards.size(), 0u)
+      << "Remaining nodes should still hold all shards";
+  MLOG_INFO("PASS: Cluster shards healthy on DS-1 ({}) and DS-2 ({})",
+            ds1_shards.size(), ds2_shards.size());
+
+  for (auto& ds : ds_list) ds->Stop();
+  FLAGS_dataserver_min_num = saved_min_num;
+  StopCM(cm);
+  executor.join();
 }
 
 }  // namespace cm

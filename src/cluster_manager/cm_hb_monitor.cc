@@ -89,15 +89,17 @@ error_code_t ClusterManagerHBMonitor::OnRecvNodeHeartbeat(const std::string &log
 }
 
 void ClusterManagerHBMonitor::OnDeferredReshardResolved(const std::string &logical_node_id) {
-  // Reset heartbeat records for this logical_id so the new DS starts fresh
+  // Reset (or create) heartbeat records for this logical_id so the rejoining DS starts fresh.
+  // This must handle two cases:
+  //   1. Records exist (DEFERRED_RESHARD / IP_UPDATE): clear + push a fresh timestamp.
+  //   2. Records were deleted (DEAD path) or never created (scale-out): insert a fresh entry.
+  // In both cases we want exactly one fresh heartbeat timestamp so the node doesn't immediately
+  // time out on its next HB scan cycle.
   auto uomap_locked = ds_hb_records_.wlock();
-  auto it = uomap_locked->find(logical_node_id);
-  if (it != uomap_locked->end()) {
-    it->second.clear();
-    // Push a fresh heartbeat so the new DS doesn't immediately time out
-    simm::common::NodeHeartbeatTs hb_ts(std::chrono::steady_clock::now(), std::chrono::system_clock::now());
-    it->second.push_back(hb_ts);
-  }
+  auto &records = (*uomap_locked)[logical_node_id];  // operator[] inserts default if absent
+  records.clear();
+  simm::common::NodeHeartbeatTs hb_ts(std::chrono::steady_clock::now(), std::chrono::system_clock::now());
+  records.push_back(hb_ts);
   MLOG_INFO("Node handshake resolved: logical_id={}, heartbeat records reset", logical_node_id);
 }
 
@@ -173,16 +175,33 @@ void ClusterManagerHBMonitor::BgHBScanLoop() {
               cm_node_manager_ptr_->SetNodeStatus(
                   logical_id, NodeStatus::DEFERRED_RESHARD, now, NodeStatus::RUNNING);
 
-            } else if (entry.status == NodeStatus::DEAD) {
-              // Already dead, skip
+            } else if (entry.status == NodeStatus::DEAD || entry.status == NodeStatus::STANDBY) {
+              // DEAD: already handled, skip.
+              // STANDBY: rejoined after DEAD but holds no shards.
+              //   HB timeout → mark DEAD (no reshard needed, no shards to migrate).
+              if (entry.status == NodeStatus::STANDBY) {
+                MLOG_WARN("STANDBY node heartbeat timeout: logical_id={} (ip={}), marking DEAD",
+                          logical_id, entry.current_ip_port);
+                cm_node_manager_ptr_->SetNodeStatus(
+                    logical_id, NodeStatus::DEAD, {}, NodeStatus::STANDBY);
+                // No reshard: STANDBY held no shards.
+              }
             }
 
           } else if (entry_opt && !FLAGS_cm_deferred_reshard_enabled) {
             // logical_node_id available, deferred reshard disabled
             // Immediate DEAD + reshard
             auto& entry = *entry_opt;
-            if (entry.status == NodeStatus::DEAD) {
-              // Already dead, skip
+            if (entry.status == NodeStatus::DEAD || entry.status == NodeStatus::STANDBY) {
+              // DEAD: already handled, skip.
+              // STANDBY: holds no shards, nothing to reshard.
+              //   HB timeout → mark DEAD (cleanup only, no shard migration).
+              if (entry.status == NodeStatus::STANDBY) {
+                MLOG_WARN("STANDBY node heartbeat timeout: logical_id={} (ip={}), marking DEAD",
+                          logical_id, entry.current_ip_port);
+                cm_node_manager_ptr_->SetNodeStatus(
+                    logical_id, NodeStatus::DEAD, {}, NodeStatus::STANDBY);
+              }
             } else {
               // Pre-check: is reshard feasible?
               auto alive = cm_node_manager_ptr_->GetAllNodeAddress(true);
