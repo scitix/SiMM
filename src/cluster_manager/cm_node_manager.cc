@@ -345,16 +345,42 @@ HandshakeResult ClusterManagerNodeManager::ProcessHandshake(
       return result;
     }
 
+    case NodeStatus::STANDBY: {
+      // Case 6: node was STANDBY (rejoined post-DEAD, holds no shards).
+      // Another handshake arrives (e.g. DS restarted again or retry).
+      // Keep it in STANDBY — nothing to give back, no routing table change needed.
+      // Update IP if it changed, to keep maps consistent.
+      if (entry.current_ip_port != new_ip_port) {
+        migrateNodeIp(logical_id, entry, new_ip_port);
+        node_status_map_.insert_or_assign(new_ip_port, NodeStatus::STANDBY);
+        logical_node_table_.assign(logical_id, entry);
+        MLOG_INFO("STANDBY node IP update: logical_id={} old_ip={} new_ip={}",
+                  logical_id, entry.current_ip_port, new_ip_port);
+      } else {
+        MLOG_INFO("STANDBY node re-handshake (same IP): logical_id={} ip={}", logical_id, new_ip_port);
+      }
+      result.action = HandshakeResult::Action::NEW_NODE;
+      result.shards_to_assign = {};
+      return result;
+    }
+
     case NodeStatus::DEAD:
     default: {
-      // Case 5: node was DEAD (reshard already happened), treat as new
+      // Case 5: node was DEAD (reshard already happened).
+      // Put node into STANDBY: it is online but holds no shards.
+      // - Not counted as "alive" for reshard feasibility checks.
+      // - Not eligible to receive shards in rebalance.
+      // - HB scan ignores STANDBY nodes (no deferred window, no reshard).
       migrateNodeIp(logical_id, entry, new_ip_port);
-      entry.status = NodeStatus::RUNNING;
+      // migrateNodeIp calls AddNode which sets node_status_map_ to RUNNING.
+      // Override to STANDBY so this node is excluded from alive counts and rebalance.
+      node_status_map_.insert_or_assign(new_ip_port, NodeStatus::STANDBY);
+      entry.status = NodeStatus::STANDBY;
       entry.deferred_reshard_since = {};
       logical_node_table_.assign(logical_id, entry);
       result.action = HandshakeResult::Action::NEW_NODE;
-      result.shards_to_assign = reported_shards;
-      MLOG_INFO("Node rejoin after DEAD: logical_id={} ip={}", logical_id, new_ip_port);
+      result.shards_to_assign = {};  // no shards to give back — reshard already happened
+      MLOG_INFO("Node rejoin after DEAD → STANDBY: logical_id={} ip={}", logical_id, new_ip_port);
       return result;
     }
   }

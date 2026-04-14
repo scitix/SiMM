@@ -141,12 +141,13 @@ void NewNodeHandshakeHandler::Work(const std::shared_ptr<sicl::rpc::RpcContext> 
         break;
       }
       case HandshakeResult::Action::NEW_NODE: {
-        // Post-grace-period scale-out: a brand-new logical_node_id not seen before.
-        // Shard assignment for scale-out is not yet supported; no shards assigned here.
-        // TODO: implement scale-out shard assignment
-        MLOG_WARN("New node registered post-grace-period (scale-out not yet supported): logical_id={} ip={}",
-                  logical_id,
-                  addr_str);
+        // Two sub-cases:
+        // (a) Rejoin after DEAD: logical_id is known but was DEAD (reshard already done).
+        //     Must reset HB records so the node doesn't immediately time out again.
+        // (b) Brand-new logical_id post-grace-period (scale-out): HB records don't exist yet,
+        //     OnDeferredReshardResolved is a no-op if key is absent, which is safe.
+        hb_monitor_->OnDeferredReshardResolved(logical_id);
+        MLOG_INFO("Node rejoin/scale-out post-grace-period: logical_id={} ip={}", logical_id, addr_str);
         break;
       }
       default:

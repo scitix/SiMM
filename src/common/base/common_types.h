@@ -17,7 +17,8 @@ namespace common {
   C(UNKNOWN)                  \
   C(RUNNING)                  \
   C(DEFERRED_RESHARD)         \
-  C(DEAD)
+  C(DEAD)                     \
+  C(STANDBY)
 
 #define NODESTATUS_ENUM(name) name,
 #define NODESTATUS_STRING(name) #name,
