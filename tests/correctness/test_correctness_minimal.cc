@@ -104,7 +104,7 @@ TEST_F(RAWMinimalTest, SingleNodePolling) {
 
   // PUT
   int32_t  kv_ret = store_->Put(key, simm_data_view);
-  ASSERT_EQ(kv_ret, CommonErr::OK) << "Put operation failed with error code: " << kv_ret;
+  ASSERT_EQ(kv_ret, CommonErr::OK) << "Put should return OK, actual: " << kv_ret;
   MLOG_DEBUG("PUT Key: {}, Size: {}\n", key, data_size);
 
   // EXIST
@@ -114,7 +114,7 @@ TEST_F(RAWMinimalTest, SingleNodePolling) {
   // GET
   auto got = store_->Allocate(data_size);
   kv_ret = store_->Get(key, got);
-  ASSERT_TRUE(kv_ret < 0) << "Get operation failed with error code: " << kv_ret;
+  ASSERT_TRUE(kv_ret > 0) << "Get should return value length > 0, actual: " << kv_ret;
   MLOG_DEBUG("GET Key: {}, Size: {}\n", key, data_size);
 
   // CHECK
