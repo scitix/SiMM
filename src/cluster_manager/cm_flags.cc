@@ -32,7 +32,7 @@ DEFINE_bool(cm_deferred_reshard_enabled,
             "Enable Deferred Reshard: when a DS heartbeat times out, CM waits for a replacement DS "
             "with the same logical_node_id before triggering reshard");
 DEFINE_uint32(cm_deferred_reshard_window_inSecs,
-              120,
+              900,
               "Deferred Reshard window in seconds: if no replacement DS registers within this window, "
               "CM falls back to standard reshard");
 
