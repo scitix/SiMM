@@ -1,7 +1,7 @@
 #include <gflags/gflags.h>
 
 DEFINE_bool(clnt_use_k8s, true, "simm client in K8S env");
-DEFINE_bool(clnt_syncreq_enable_retry, true, "enable simm client sync requests retry or not");
+DEFINE_bool(clnt_syncreq_enable_retry, false, "enable simm client sync requests retry or not");
 DEFINE_uint32(clnt_syncreq_retry_count, 2, "simm client sync requests retry count");
 DEFINE_uint32(clnt_thread_pool_size, 10, "simm client thread pool size");
 DEFINE_uint32(clnt_cm_addr_check_interval_inSecs,

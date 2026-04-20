@@ -205,7 +205,7 @@ class ClientMessenger {
   sicl::transport::Mempool *mempool_{nullptr};
 
   // simm client request timeout settings
-  sicl::transport::TimerTick sync_req_timeout_ms_{sicl::transport::TimerTick::TIMER_3S};
+  sicl::transport::TimerTick sync_req_timeout_ms_{sicl::transport::TimerTick::TIMER_1S};
   sicl::transport::TimerTick async_req_timeout_ms_{sicl::transport::TimerTick::TIMER_3S};
 
   /// Failover thread.
