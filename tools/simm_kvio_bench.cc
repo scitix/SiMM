@@ -59,7 +59,7 @@ DECLARE_LOG_MODULE("simm_client");
 
 // FIXME(ytji) :
 // 1. cover \ and "
-// 2. cover special symbols, e.g. ￥《 》 ...
+// 2. cover special symbols, e.g. $ < > ...
 static const char charset[] =
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
