@@ -46,7 +46,7 @@ jobs:
       - name: Build
         run: bash ./build.sh --mode=release --py_ver ${{ env.PYTHON_VERSION }} --clean --test
 
-      # ── C++ Unit Test（gtest via CTest）──────────────────
+      # ── C++ Unit Test (gtest via CTest) ──────────────────
       - name: Run C++ unit tests
         run: |
           RESULTS_DIR=build/release/Testing

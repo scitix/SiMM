@@ -97,7 +97,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Generate image tag according to branch：
+      # Generate image tag according to branch:
       #   push to main/master → :latest
       #   push tag v1.2.3    → :v1.2.3 + :1.2.3 + :1.2 + :latest
       - name: Extract Docker metadata

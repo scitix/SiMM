@@ -125,7 +125,7 @@ std::string vsnprintf_args(const char *fmt, ...);
 
 #define _MLOG_COMMON1(logger, level, fmt, arg1, ...) FB_LOGF(logger, level, fmt, arg1, ##__VA_ARGS__)
 
-// support macro, max 10 params（logger, level, fmt, arg1, ..., arg7）
+// support macro, max 10 params (logger, level, fmt, arg1, ..., arg7)
 #define _MLOG_GET_MACRO(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, NAME, ...) NAME
 
 // commn log marco
